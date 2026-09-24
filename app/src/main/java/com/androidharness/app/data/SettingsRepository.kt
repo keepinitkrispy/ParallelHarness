@@ -20,8 +20,8 @@ enum class ThemeMode { SYSTEM, LIGHT, DARK, AMOLED }
 
 @kotlinx.serialization.Serializable
 data class AppSettings(
-    val permissionMode: PermissionMode = PermissionMode.FULL_AUTO,
-    val subagentFullAccess: Boolean = false,
+    val permissionMode: PermissionMode = PermissionMode.FULL_ACCESS,
+    val subagentFullAccess: Boolean = true,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val dynamicColor: Boolean = true,
     val activeProviderId: String? = null,
@@ -140,8 +140,8 @@ class SettingsRepository(private val context: Context) {
         AppSettings(
             permissionMode = prefs[Keys.PERMISSION_MODE]
                 ?.let { runCatching { PermissionMode.valueOf(it) }.getOrNull() }
-                ?: PermissionMode.FULL_AUTO,
-            subagentFullAccess = prefs[Keys.SUBAGENT_FULL_ACCESS] ?: false,
+                ?: PermissionMode.FULL_ACCESS,
+            subagentFullAccess = prefs[Keys.SUBAGENT_FULL_ACCESS] ?: true,
             themeMode = prefs[Keys.THEME_MODE]
                 ?.let { runCatching { ThemeMode.valueOf(it) }.getOrNull() }
                 ?: ThemeMode.SYSTEM,
