@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Keep the CPU alive while an agent run / terminal is active so
+         minimizing the app doesn't freeze the terminal mid-run. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Let the user exclude the app from battery optimization (Samsung etc.). -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+    <!-- In-app updates: request the install session for downloaded release APKs. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+
+    <!-- Make audio recording hardware optional so devices without a built-in
+         microphone (Android TV, displays, kiosks) are not excluded by Play. -->
+    <uses-feature
+        android:name="android.hardware.microphone"
+        android:required="false" />
+
+    <!-- Allow discovering speech recognition service engines on Android 11+ -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+    </queries>
+
+    <!-- Terminal/storage: let the app use real filesystem paths across shared
+         storage ("All files access"), which the shell and file tools need on
+         Android 11+. Grant it from Settings → Storage access. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
+    <application
+        android:name=".HarnessApp"
+        android:allowBackup="true"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
+        android:enableOnBackInvokedCallback="true"
+        android:theme="@style/Theme.AndroidHarness">
+
+        <activity
+            android:name=".MainActivity"
+            android:launchMode="singleTask"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- MCP OAuth: the browser redirects back here after sign-in. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="androidharness" android:host="mcp" />
+            </intent-filter>
+            <!-- Share target: text, links, and images shared from other apps
+                 land in the chat composer. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+        </activity>
+
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false" />
+
+        <!-- Shares staged update APKs with the system package installer. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.update"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <service
+            android:name=".AgentService"
+            android:foregroundServiceType="specialUse"
+            android:exported="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Persistent local coding agent and terminal runtime with user-controlled stop action" />
+        </service>
+
+        <!-- Resolves notification action buttons (approve/deny/answer) against
+             RunManager. Explicit intents only, never exported. -->
+        <receiver
+            android:name=".agent.NotificationActionReceiver"
+            android:exported="false" />
+        <service android:name="androidx.work.impl.foreground.SystemForegroundService" android:foregroundServiceType="dataSync" tools:node="merge" />
+    </application>
+
+</manifest>

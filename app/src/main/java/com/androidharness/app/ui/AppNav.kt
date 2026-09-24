@@ -1,0 +1,1459 @@
+package com.androidharness.app.ui
+
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.outlined.Difference
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.ForkRight
+import androidx.compose.material.icons.outlined.AutoMode
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Terminal
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDrawerState
+import androidx.compose.runtime.Composable
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import com.androidharness.app.ui.common.formatTokens
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavHostController
+import androidx.navigation.NavType
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
+import android.content.Context
+import com.androidharness.app.AppContainer
+import com.androidharness.app.data.AppSettings
+import com.androidharness.app.data.MessageHit
+import com.androidharness.app.data.db.ChatSearch
+import com.androidharness.app.data.db.SessionEntity
+import com.androidharness.app.ui.chat.ChatScreen
+import com.androidharness.app.ui.chat.ChatViewModel
+import com.androidharness.app.ui.buildtest.BuildTestScreen
+import com.androidharness.app.ui.common.HarnessMark
+import com.androidharness.app.ui.common.ProviderMark
+import com.androidharness.app.ui.common.formatRelativeTime
+import com.androidharness.app.ui.files.ChangesScreen
+import com.androidharness.app.ui.files.CodeEditorScreen
+import com.androidharness.app.ui.files.FilesScreen
+import com.androidharness.app.ui.settings.ProvidersScreen
+import com.androidharness.app.ui.settings.SettingsScreen
+import com.androidharness.app.ui.settings.SkillsScreen
+import com.androidharness.app.ui.setup.SetupScreen
+import com.androidharness.app.ui.terminal.TerminalScreen
+import com.androidharness.app.ui.theme.fastEffectsSpec
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
+import java.util.Calendar
+
+private enum class SessionGroup(val label: String) {
+    PINNED("Pinned"),
+    TODAY("Today"),
+    YESTERDAY("Yesterday"),
+    THIS_WEEK("This week"),
+    OLDER("Older"),
+    ARCHIVED("Archived"),
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun AppNav(container: AppContainer) {
+    val nav = rememberNavController()
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+    val focusManager = LocalFocusManager.current
+    val sessions by container.sessions.sessions.collectAsStateWithLifecycle(initialValue = emptyList())
+    // Nullable gate: the synthetic AppSettings() default (onboardingDone=false)
+    // used to pass for one frame as a real emission and flash the setup screen
+    // for fully-onboarded users. Null = DataStore hasn't spoken yet.
+    val settingsState by container.settings.settings
+        .map { it as AppSettings? }
+        .collectAsStateWithLifecycle(initialValue = null)
+    val providers by container.providers.providers.collectAsStateWithLifecycle(initialValue = emptyList())
+    val currentWorkspace by container.workspace.currentProject.collectAsStateWithLifecycle(initialValue = null)
+    val activeFs by container.workspace.current.collectAsStateWithLifecycle(initialValue = null)
+    val allWorkspaces by container.workspace.projects.collectAsStateWithLifecycle(initialValue = emptyList())
+    val keyboard = LocalSoftwareKeyboardController.current
+
+    // Setup fires exactly once, decided from DataStore's REAL first emission.
+    val settings = settingsState
+    if (settings == null) {
+        Box(Modifier.fillMaxSize())
+        return
+    }
+    // Stay on setup until Skip or Start harness. Connecting a provider used
+    // to flip this and remount NavHost onto chat mid-flow.
+    val needsSetup = !settings.onboardingDone
+    val lastSession = settings.lastActiveSessionId?.takeIf { settings.resumeLastChat }
+    val startDestination = remember {
+        when {
+            needsSetup -> "setup"
+            !lastSession.isNullOrBlank() -> "chat/$lastSession"
+            else -> "chat"
+        }
+    }
+
+    var searchQuery by remember { mutableStateOf("") }
+    var searchOpen by remember { mutableStateOf(false) }
+    val searchFocus = remember { FocusRequester() }
+    var fuzzySearch by remember { mutableStateOf(false) }
+    var messageHits by remember { mutableStateOf<List<MessageHit>>(emptyList()) }
+
+    // Message hits lag the title filter by a short debounce so typing stays
+    // fluid: word mode asks the FTS index, fuzzy mode falls back to LIKE.
+    androidx.compose.runtime.LaunchedEffect(searchQuery, fuzzySearch) {
+        val q = searchQuery.trim()
+        if (q.isEmpty()) {
+            messageHits = emptyList()
+            return@LaunchedEffect
+        }
+        delay(250)
+        messageHits = runCatching { container.sessions.searchMessages(q, fuzzySearch) }
+            .getOrDefault(emptyList())
+    }
+
+    // Keyboard belongs to manual taps only. Two mechanisms fought this:
+    // (1) the composer's focus survives the drawer opening, and (2) the
+    // drawer's own accessibility focus pass can land ON the search field,
+    // that one arrives a frame AFTER the open event, so clearing immediately
+    // loses the race. Clear on both edges, once more after the settle, and
+    // hide the IME outright.
+    androidx.compose.runtime.LaunchedEffect(drawerState.currentValue) {
+        focusManager.clearFocus(force = true)
+        keyboard?.hide()
+        if (drawerState.currentValue == DrawerValue.Open) {
+            delay(120)
+            focusManager.clearFocus(force = true)
+            keyboard?.hide()
+        } else {
+            // Drawer closed: collapse search so it starts fresh next open.
+            searchOpen = false
+            searchQuery = ""
+        }
+    }
+
+    // Which session the current back stack shows, for drawer highlighting.
+    val currentEntry by nav.currentBackStackEntryFlow.collectAsStateWithLifecycle(initialValue = null)
+    val currentSessionId = currentEntry
+        ?.takeIf { it.destination.route == "chat/{sessionId}?messageId={messageId}" }
+        ?.arguments?.getString("sessionId")
+
+    // Track active session in DataStore whenever navigating to a chat session
+    androidx.compose.runtime.LaunchedEffect(currentSessionId) {
+        if (!currentSessionId.isNullOrBlank()) {
+            container.settings.setLastActiveSessionId(currentSessionId)
+        }
+    }
+    // The code editor fights the drawer's edge-swipe for every gesture:
+    // horizontal scrolling inside the editor opens the sidebar mid-edit.
+    // The drawer keeps its menu button; only the swipe gesture is disabled
+    // while an editor is on screen.
+    val currentRoute = currentEntry?.destination?.route
+    val drawerGesturesEnabled = currentRoute?.startsWith("viewer/") != true
+    val runningSessionIds by container.runManager.runningSessionIds.collectAsStateWithLifecycle()
+
+    var actionsSession by remember { mutableStateOf<SessionEntity?>(null) }
+    var renamingSession by remember { mutableStateOf<SessionEntity?>(null) }
+    var collapsedGroups by remember { mutableStateOf(setOf(SessionGroup.OLDER, SessionGroup.ARCHIVED)) }
+    var showWorkspaceSheet by remember { mutableStateOf(false) }
+    var showAddWorkspace by remember { mutableStateOf(false) }
+
+    // One-time notice for installs whose Linux environment predates a package
+    // addition (gh): shown once, then never again, whichever button closes it.
+    val latePackages = remember { container.linuxEnv.latePackagesPending() }
+    var showLatePackagesNotice by remember {
+        val prefs = container.appContext.getSharedPreferences("notices", Context.MODE_PRIVATE)
+        mutableStateOf(latePackages.isNotEmpty() && !prefs.getBoolean("late_packages_v1", false))
+    }
+    fun dismissLatePackagesNotice() {
+        container.appContext.getSharedPreferences("notices", Context.MODE_PRIVATE)
+            .edit().putBoolean("late_packages_v1", true).apply()
+        showLatePackagesNotice = false
+    }
+
+    // System folder picker for adding a SAF workspace from the drawer.
+    val safWorkspacePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { uri -> uri?.let { scope.launch { container.workspace.addPickedFolder(it) } } }
+
+    // Run-result notifications deep-link into the session's chat.
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        container.pendingSessionId.collect { sid -> nav.navigate("chat/$sid") }
+    }
+
+    fun openChat(sessionId: String?, messageId: String? = null) {
+        scope.launch { drawerState.close() }
+        if (sessionId == null) {
+            scope.launch { container.settings.setLastActiveSessionId(null) }
+            nav.navigate("chat") { popUpTo("chat") { inclusive = true } }
+        } else {
+            val target = messageId?.let { "?messageId=${encode(it)}" }.orEmpty()
+            nav.navigate("chat/$sessionId$target")
+        }
+    }
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        gesturesEnabled = drawerGesturesEnabled,
+        drawerContent = {
+            ModalDrawerSheet(
+                drawerContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+            ) {
+                Column(Modifier.fillMaxSize()) {
+                    // ----- Wordmark header -----
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 22.dp, bottom = 14.dp),
+                    ) {
+                        HarnessMark(size = 36.dp)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "AndroidHarness",
+                                style = MaterialTheme.typography.titleMediumEmphasized,
+                            )
+                            Text(
+                                "Workspace agent",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+
+                    if (!searchOpen) {
+                        Surface(
+                            onClick = {
+                                searchOpen = true
+                                scope.launch {
+                                    delay(120)
+                                    runCatching { searchFocus.requestFocus() }
+                                    keyboard?.show()
+                                }
+                            },
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp),
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
+                            ) {
+                                Icon(
+                                    Icons.Outlined.Search,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(19.dp),
+                                )
+                                Spacer(Modifier.width(10.dp))
+                                Text(
+                                    "Search chats and messages",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+
+                    // ----- Search field -----
+                    AnimatedVisibility(
+                        visible = searchOpen,
+                        enter = fadeIn(tween(150)) + expandVertically(tween(180)),
+                        exit = fadeOut(tween(120)) + shrinkVertically(tween(150)),
+                    ) {
+                        Column(Modifier.fillMaxWidth()) {
+                            OutlinedTextField(
+                                value = searchQuery,
+                                onValueChange = { searchQuery = it },
+                                placeholder = { Text("Search chats and messages") },
+                                singleLine = true,
+                                leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
+                                trailingIcon = {
+                                    IconButton(onClick = {
+                                        searchOpen = false
+                                        searchQuery = ""
+                                        focusManager.clearFocus(force = true)
+                                        keyboard?.hide()
+                                    }) {
+                                        Icon(
+                                            Icons.Filled.Close,
+                                            contentDescription = "Close search",
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                    }
+                                },
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                                keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() }),
+                                shape = RoundedCornerShape(14.dp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                    unfocusedBorderColor = Color.Transparent,
+                                    focusedBorderColor = Color.Transparent,
+                                ),
+                                textStyle = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp)
+                                    .focusRequester(searchFocus),
+                            )
+                            FuzzySearchRow(
+                                fuzzy = fuzzySearch,
+                                onToggle = { fuzzySearch = !fuzzySearch },
+                            )
+                        }
+                    }
+
+                    // ----- New chat -----
+                    Button(
+                        onClick = { openChat(null) },
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                            .heightIn(min = 46.dp),
+                    ) {
+                        Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(19.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("New chat", style = MaterialTheme.typography.titleSmall)
+                    }
+                    Spacer(Modifier.height(8.dp))
+
+                    // ----- Workspace switcher -----
+                    Surface(
+                        onClick = { showWorkspaceSheet = true },
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 2.dp),
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
+                        ) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                shape = RoundedCornerShape(10.dp),
+                            ) {
+                                Box(Modifier.size(34.dp), contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        Icons.Outlined.Folder,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    currentWorkspace?.name ?: "Workspace",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    currentWorkspace?.let { container.workspace.describe(it).kindLabel }
+                                        ?: "Choose workspace",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            Icon(
+                                Icons.Filled.KeyboardArrowDown,
+                                contentDescription = "Switch workspace",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+
+                    // ----- Files-changed pill for the open chat -----
+                    // Live per-session aggregate; hidden until the agent (or an
+                    // in-app save) touches something in this conversation.
+                    if (currentSessionId != null) {
+                        val sessionChanges by container.sessions
+                            .fileChangesFor(currentSessionId!!)
+                            .collectAsStateWithLifecycle(initialValue = emptyList())
+                        if (sessionChanges.isNotEmpty()) {
+                            val adds = sessionChanges.sumOf { it.added }
+                            val dels = sessionChanges.sumOf { it.removed }
+                            val sid = currentSessionId!!
+                            Surface(
+                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 2.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .combinedClickable(onClick = {
+                                        scope.launch { drawerState.close() }
+                                        nav.navigate("changes/${encode(sid)}")
+                                    }),
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                ) {
+                                    Icon(
+                                        Icons.Outlined.Difference,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(17.dp),
+                                        tint = MaterialTheme.colorScheme.primary,
+                                    )
+                                    Spacer(Modifier.width(10.dp))
+                                    Text(
+                                        "${sessionChanges.size} files changed",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    com.androidharness.app.ui.files.DiffStatText(adds, dels)
+                                }
+                            }
+                        }
+                    }
+
+                    val boundaries = remember { DateBoundaries.now() }
+                    val filteredSessions = remember(sessions, searchQuery) {
+                        if (searchQuery.isBlank()) sessions else sessions.filter {
+                            it.title.contains(searchQuery, ignoreCase = true)
+                        }
+                    }
+                    val groupedSessions = remember(filteredSessions, settings.pinnedSessions, settings.archivedSessions) {
+                        filteredSessions.groupBy { sessionGroup(it, settings, boundaries) }
+                    }
+
+                    LazyColumn(
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                    ) {
+                        val filtered = filteredSessions
+
+                        if (searchQuery.isNotBlank()) {
+                            // Search mode: title matches on top, message hits
+                            // from the FTS/fuzzy search underneath.
+                            if (filtered.isNotEmpty()) {
+                                stickyHeader {
+                                    DrawerGroupHeader(label = "Chats", collapsible = false, collapsed = false, onClick = {})
+                                }
+                                items(filtered, key = { "s-${it.id}" }) { session ->
+                                    SessionRow(
+                                        session = session,
+                                        selected = session.id == currentSessionId,
+                                        pinned = session.id in settings.pinnedSessions,
+                                        running = session.id in runningSessionIds,
+                                        onClick = { openChat(session.id) },
+                                        onLongClick = { actionsSession = session },
+                                    )
+                                }
+                            }
+                            if (messageHits.isNotEmpty()) {
+                                stickyHeader {
+                                    DrawerGroupHeader(label = "Messages", collapsible = false, collapsed = false, onClick = {})
+                                }
+                                items(messageHits, key = { "m-${it.messageId}" }) { hit ->
+                                    MessageHitRow(
+                                        hit = hit,
+                                        query = searchQuery,
+                                        fuzzy = fuzzySearch,
+                                        onClick = { openChat(hit.sessionId, hit.messageId) },
+                                    )
+                                }
+                            }
+                            if (filtered.isEmpty() && messageHits.isEmpty()) {
+                                item {
+                                    Text(
+                                        "Nothing matches \"$searchQuery\".",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(20.dp),
+                                    )
+                                }
+                            }
+                        } else {
+                            val grouped = groupedSessions
+                            val order = SessionGroup.entries
+                            order.forEach { group ->
+                                val items = grouped[group].orEmpty()
+                                if (items.isEmpty()) return@forEach
+                                val collapsed = group in collapsedGroups
+                                stickyHeader {
+                                    DrawerGroupHeader(
+                                        label = group.label,
+                                        collapsible = group == SessionGroup.OLDER || group == SessionGroup.ARCHIVED,
+                                        collapsed = collapsed,
+                                        onClick = {
+                                            collapsedGroups = if (collapsed) collapsedGroups - group
+                                            else collapsedGroups + group
+                                        },
+                                    )
+                                }
+                                if (!collapsed) {
+                                    items(items, key = { it.id }) { session ->
+                                        SessionRow(
+                                            session = session,
+                                            selected = session.id == currentSessionId,
+                                            pinned = session.id in settings.pinnedSessions,
+                                            running = session.id in runningSessionIds,
+                                            onClick = { openChat(session.id) },
+                                            onLongClick = { actionsSession = session },
+                                        )
+                                    }
+                                }
+                            }
+
+                            if (filtered.isEmpty()) {
+                                item {
+                                    Text(
+                                        "No chats yet.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(20.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(
+                        Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                    )
+                    Text(
+                        "TOOLS",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(start = 20.dp, bottom = 6.dp),
+                    )
+                    QuickActionStrip(
+                        buildSelected = currentRoute == "build-test",
+                        automationSelected = currentRoute == "automation",
+                        terminalSelected = currentRoute == "terminal",
+                        onBuild = {
+                            scope.launch { drawerState.close() }
+                            nav.navigate("build-test")
+                        },
+                        onAutomation = {
+                            scope.launch { drawerState.close() }
+                            nav.navigate("automation")
+                        },
+                        onTerminal = {
+                            scope.launch { drawerState.close() }
+                            nav.navigate("terminal")
+                        },
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    ProviderDrawerRow(
+                        selected = currentRoute == "providers",
+                        subtitle = run {
+                            val active = providers.firstOrNull { it.id == settings.activeProviderId }
+                            if (active == null) "Connect a model provider"
+                            else "${active.name} · ${settings.activeModel?.takeIf { it.isNotBlank() } ?: active.model}"
+                        },
+                        onClick = {
+                            scope.launch { drawerState.close() }
+                            nav.navigate("providers")
+                        },
+                    )
+                    DrawerRow(
+                        icon = { Icon(Icons.Outlined.Settings, contentDescription = null) },
+                        title = "Settings",
+                        subtitle = "Agent, workspace and appearance",
+                        selected = currentRoute == "settings",
+                        onClick = {
+                            scope.launch { drawerState.close() }
+                            nav.navigate("settings")
+                        },
+                    )
+                    Spacer(Modifier.height(12.dp))
+                }
+            }
+        },
+    ) {
+        Column(Modifier.fillMaxSize()) {
+        com.androidharness.app.ui.common.SshWorkspaceBar(container, activeFs as? com.androidharness.app.workspace.SshFs)
+        NavHost(
+            modifier = Modifier.weight(1f),
+            navController = nav,
+            startDestination = startDestination,
+            // Quiet transitions: a short fade with a small rise. No shared-element
+            // theatrics, screens should feel instant.
+            enterTransition = {
+                fadeIn(tween(220, easing = FastOutSlowInEasing)) +
+                    slideInVertically(tween(240, easing = FastOutSlowInEasing)) { it / 28 }
+            },
+            exitTransition = { fadeOut(tween(180, easing = FastOutSlowInEasing)) },
+            popEnterTransition = { fadeIn(tween(220, easing = FastOutSlowInEasing)) },
+            popExitTransition = {
+                fadeOut(tween(180, easing = FastOutSlowInEasing)) +
+                    slideOutVertically(tween(200, easing = FastOutSlowInEasing)) { it / 28 }
+            },
+        ) {
+            composable("chat") {
+                val vm: ChatViewModel = viewModel(factory = ChatViewModel.factory(container, null))
+                ChatScreen(
+                    viewModel = vm,
+                    onOpenDrawer = {
+                        focusManager.clearFocus(force = true)
+                        scope.launch { drawerState.open() }
+                    },
+                    onOpenFile = { path, line ->
+                        nav.navigate("viewer/${encode(path)}?line=${line ?: 0}&session=")
+                    },
+                    onNewChat = {
+                        scope.launch { container.settings.setLastActiveSessionId(null) }
+                        nav.navigate("chat") { popUpTo("chat") { inclusive = true } }
+                    },
+                    onOpenTerminal = { nav.navigate("terminal") },
+                    onOpenFiles = { nav.navigate("files") },
+                    onOpenSubagent = { callId ->
+                        vm.state.value.sessionId?.let { sid ->
+                            nav.navigate("subagent/${encode(sid)}/${encode(callId)}")
+                        }
+                    },
+                    onOpenSettings = { nav.navigate("settings") },
+                    onNavigateToSession = { sid ->
+                        nav.navigate("chat/$sid")
+                    },
+                )
+            }
+            composable(
+                "chat/{sessionId}?messageId={messageId}",
+                arguments = listOf(
+                    navArgument("sessionId") { type = NavType.StringType },
+                    navArgument("messageId") { type = NavType.StringType; nullable = true; defaultValue = null },
+                ),
+            ) { entry ->
+                val sessionId = entry.arguments?.getString("sessionId")
+                val searchMessageId = entry.arguments?.getString("messageId")
+                val vm: ChatViewModel =
+                    viewModel(factory = ChatViewModel.factory(container, sessionId))
+                ChatScreen(
+                    viewModel = vm,
+                    searchMessageId = searchMessageId,
+                    onOpenDrawer = {
+                        focusManager.clearFocus(force = true)
+                        scope.launch { drawerState.open() }
+                    },
+                    onOpenFile = { path, line ->
+                        val sid = vm.state.value.sessionId ?: sessionId
+                        nav.navigate("viewer/${encode(path)}?line=${line ?: 0}&session=${encode(sid.orEmpty())}")
+                    },
+                    onNewChat = {
+                        scope.launch { container.settings.setLastActiveSessionId(null) }
+                        nav.navigate("chat") { popUpTo("chat") { inclusive = true } }
+                    },
+                    onOpenTerminal = { nav.navigate("terminal") },
+                    onOpenFiles = { nav.navigate("files") },
+                    onOpenSubagent = { callId ->
+                        vm.state.value.sessionId?.let { sid ->
+                            nav.navigate("subagent/${encode(sid)}/${encode(callId)}")
+                        }
+                    },
+                    onOpenSettings = { nav.navigate("settings") },
+                    onNavigateToSession = { sid ->
+                        nav.navigate("chat/$sid")
+                    },
+                )
+            }
+            composable(
+                "subagent/{sessionId}/{toolCallId}",
+                arguments = listOf(
+                    navArgument("sessionId") { type = NavType.StringType },
+                    navArgument("toolCallId") { type = NavType.StringType },
+                ),
+            ) { entry ->
+                com.androidharness.app.ui.subagent.SubagentScreen(
+                    container = container,
+                    sessionId = entry.arguments?.getString("sessionId").orEmpty(),
+                    toolCallId = entry.arguments?.getString("toolCallId").orEmpty(),
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable("terminal") {
+                TerminalScreen(container = container, onBack = { nav.popBackStack() })
+            }
+            composable("files") {
+                FilesScreen(
+                    container = container,
+                    sessionId = currentSessionId,
+                    onBack = { nav.popBackStack() },
+                    onOpenFile = { path ->
+                        nav.navigate("viewer/${encode(path)}?line=0&session=${encode(currentSessionId.orEmpty())}")
+                    },
+                    onOpenChanges = currentSessionId?.let { sid ->
+                        { nav.navigate("changes/${encode(sid)}") }
+                    },
+                )
+            }
+            composable("changes/{sessionId}") { entry ->
+                val sid = entry.arguments?.getString("sessionId").orEmpty()
+                ChangesScreen(
+                    container = container,
+                    sessionId = sid,
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable(
+                "viewer/{path}?line={line}&session={session}",
+                arguments = listOf(
+                    navArgument("path") { type = NavType.StringType },
+                    navArgument("line") { type = NavType.IntType; defaultValue = 0 },
+                    navArgument("session") {
+                        type = NavType.StringType
+                        defaultValue = ""
+                    },
+                ),
+            ) { entry ->
+                val path = entry.arguments?.getString("path").orEmpty()
+                val line = entry.arguments?.getInt("line")?.takeIf { it > 0 }
+                val sessionArg = entry.arguments?.getString("session").orEmpty()
+                CodeEditorScreen(
+                    container = container,
+                    path = path,
+                    initialLine = line,
+                    sessionId = sessionArg.takeIf { it.isNotBlank() },
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable("automation") {
+                com.androidharness.app.ui.automation.AutomationScreen(container,
+                    onBack = { nav.popBackStack() },
+                    onOpenSession = { nav.navigate("chat/$it") })
+            }
+            composable("build-test") {
+                BuildTestScreen(
+                    container = container,
+                    onBack = { nav.popBackStack() },
+                    onOpenFile = { path, line ->
+                        nav.navigate("viewer/${encode(path)}?line=$line&session=${encode(currentSessionId.orEmpty())}")
+                    },
+                    onOpenTerminal = { nav.navigate("terminal") },
+                    onFixWithAgent = { prompt ->
+                        container.pendingAgentPrompt.value = prompt
+                        scope.launch { container.settings.setLastActiveSessionId(null) }
+                        nav.navigate("chat")
+                    },
+                )
+            }
+            composable("settings") {
+                SettingsScreen(
+                    container = container,
+                    onBack = { nav.popBackStack() },
+                    onOpenStats = { nav.navigate("stats") },
+                    onRunSetup = { nav.navigate("setup") },
+                    onOpenSkills = { nav.navigate("skills") },
+                    onOpenProviders = { nav.navigate("providers") },
+                )
+            }
+            composable("skills") {
+                SkillsScreen(container = container, onBack = { nav.popBackStack() })
+            }
+            composable("stats") {
+                com.androidharness.app.ui.stats.StatsScreen(
+                    container = container,
+                    onBack = { nav.popBackStack() },
+                )
+            }
+            composable("providers") {
+                ProvidersScreen(container = container, onBack = { nav.popBackStack() })
+            }
+            composable("setup") {
+                com.androidharness.app.ui.setup.SetupScreen(
+                    container = container,
+                    onFinish = {
+                        nav.navigate("chat") { popUpTo("setup") { inclusive = true } }
+                    },
+                )
+            }
+        }
+    }
+
+    }
+
+    // Workspace switching from the drawer + chat overflow shares one sheet.
+    if (showWorkspaceSheet) {
+        com.androidharness.app.ui.chat.components.WorkspaceSwitcherSheet(
+            projects = allWorkspaces,
+            currentProjectId = currentWorkspace?.id,
+            describe = { container.workspace.describe(it) },
+            onSelect = { id -> scope.launch { container.workspace.setActiveProject(id) } },
+            onAdd = { showAddWorkspace = true },
+            onDismiss = { showWorkspaceSheet = false },
+            onDelete = { project ->
+                scope.launch { container.workspace.deleteProject(project) }
+            },
+        )
+    }
+    if (showAddWorkspace) {
+        com.androidharness.app.ui.common.AddWorkspaceDialog(
+            container = container,
+            onDismiss = { showAddWorkspace = false },
+            onPickSaf = {
+                showAddWorkspace = false
+                safWorkspacePicker.launch(null)
+            },
+        )
+    }
+
+    // One-time "the toolchain gained new packages" notice for installs that
+    // predate the addition. "Fetch now" lands on Settings and starts the
+    // update so the progress card is visible; every path marks it as seen.
+    if (showLatePackagesNotice) {
+        AlertDialog(
+            onDismissRequest = { dismissLatePackagesNotice() },
+            title = { Text("Terminal & environment updated") },
+            text = {
+                Text(
+                    "The Linux toolchain gained new packages: ${latePackages.joinToString(", ")}. " +
+                        "Fetch them to add the new tools to your installed environment; " +
+                        "until then they show up as missing.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    dismissLatePackagesNotice()
+                    nav.navigate("settings")
+                    scope.launch { container.linuxEnv.updateEnvironment() }
+                }) { Text("Fetch now") }
+            },
+            dismissButton = {
+                TextButton(onClick = { dismissLatePackagesNotice() }) { Text("Later") }
+            },
+        )
+    }
+
+    // Long-press session actions.
+    actionsSession?.let { session ->
+        val pinned = session.id in settings.pinnedSessions
+        val archived = session.id in settings.archivedSessions
+        AlertDialog(
+            onDismissRequest = { actionsSession = null },
+            title = { Text(session.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    SessionAction("Rename") {
+                        renamingSession = session
+                        actionsSession = null
+                    }
+                    SessionAction(if (pinned) "Unpin" else "Pin") {
+                        scope.launch { container.settings.setPinned(session.id, !pinned) }
+                        actionsSession = null
+                    }
+                    SessionAction(if (archived) "Unarchive" else "Archive") {
+                        scope.launch { container.settings.setArchived(session.id, !archived) }
+                        actionsSession = null
+                    }
+                    SessionAction("Delete", destructive = true) {
+                        scope.launch { container.sessions.deleteSession(session) }
+                        actionsSession = null
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { actionsSession = null }) { Text("Close") }
+            },
+        )
+    }
+
+    renamingSession?.let { session ->
+        var title by remember(session) { mutableStateOf(session.title) }
+        AlertDialog(
+            onDismissRequest = { renamingSession = null },
+            title = { Text("Rename chat") },
+            text = {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (title.isNotBlank()) {
+                        scope.launch { container.sessions.renameSession(session.id, title.trim()) }
+                    }
+                    renamingSession = null
+                }) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { renamingSession = null }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Drawer building blocks
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun DrawerGroupHeader(
+    label: String,
+    collapsible: Boolean,
+    collapsed: Boolean,
+    onClick: () -> Unit,
+) {
+    val rotation by animateFloatAsState(
+        targetValue = if (collapsed) -90f else 0f,
+        animationSpec = fastEffectsSpec(),
+        label = "group chevron",
+    )
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(onClick = onClick)
+            .padding(start = 24.dp, end = 20.dp, top = 14.dp, bottom = 4.dp),
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        if (collapsible) {
+            Icon(
+                Icons.Filled.KeyboardArrowDown,
+                contentDescription = if (collapsed) "Expand" else "Collapse",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .size(20.dp)
+                    .rotate(rotation),
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun SessionRow(
+    session: SessionEntity,
+    selected: Boolean,
+    pinned: Boolean,
+    running: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
+    val scheme = MaterialTheme.colorScheme
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 2.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (selected) scheme.surfaceContainerHigh else Color.Transparent)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .padding(horizontal = 12.dp, vertical = 11.dp),
+    ) {
+        if (pinned) {
+            Icon(
+                Icons.Filled.PushPin,
+                contentDescription = "Pinned",
+                tint = scheme.onSurfaceVariant,
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+        }
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (session.title.startsWith("Fork of ")) {
+                    Icon(
+                        Icons.Outlined.ForkRight,
+                        contentDescription = "Forked session",
+                        tint = scheme.primary,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Spacer(Modifier.width(4.dp))
+                }
+                Text(
+                    session.title,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = scheme.onSurface,
+                )
+            }
+            if (running) {
+                RunningSessionStatus(session.totalInputTokens + session.totalOutputTokens)
+            } else {
+                Text(
+                    buildString {
+                        append(formatRelativeTime(session.updatedAt))
+                        val total = session.totalInputTokens + session.totalOutputTokens
+                        if (total > 0) {
+                            append(" · ")
+                            append(formatTokens(total))
+                            append(" tokens")
+                        }
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = scheme.onSurfaceVariant,
+                )
+            }
+        }
+        if (selected) {
+            Icon(
+                Icons.Filled.Check,
+                contentDescription = "Current chat",
+                tint = scheme.primary,
+                modifier = Modifier.size(16.dp),
+            )
+        } else if (running) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(scheme.primaryContainer.copy(alpha = 0.8f))
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+            ) {
+                Text(
+                    "Running",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = scheme.onPrimaryContainer,
+                    fontWeight = FontWeight.Medium,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RunningSessionStatus(totalTokens: Long) {
+    val scheme = MaterialTheme.colorScheme
+    val infiniteTransition = rememberInfiniteTransition(label = "running pulse")
+    val alpha by infiniteTransition.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(800, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "running alpha",
+    )
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(top = 2.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(7.dp)
+                .alpha(alpha)
+                .background(scheme.primary, CircleShape),
+        )
+        Spacer(Modifier.width(5.dp))
+        Text(
+            "Working…",
+            style = MaterialTheme.typography.labelSmall,
+            color = scheme.primary,
+            fontWeight = FontWeight.SemiBold,
+        )
+        if (totalTokens > 0) {
+            Text(
+                " · ${formatTokens(totalTokens)} tokens",
+                style = MaterialTheme.typography.labelSmall,
+                color = scheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun FuzzySearchRow(fuzzy: Boolean, onToggle: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 2.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerLow)
+            .combinedClickable(onClick = onToggle)
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("Fuzzy search", style = MaterialTheme.typography.labelLarge)
+            Text(
+                if (fuzzy) "Find text anywhere in messages" else "Whole-word matches",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Switch(checked = fuzzy, onCheckedChange = { onToggle() })
+    }
+}
+
+@Composable
+private fun MessageHitRow(
+    hit: MessageHit,
+    query: String,
+    fuzzy: Boolean,
+    onClick: () -> Unit,
+) {
+    val scheme = MaterialTheme.colorScheme
+    val annotated = run {
+        val snippet = ChatSearch.snippet(hit.text, ChatSearch.highlightNeedles(query, fuzzy))
+        buildAnnotatedString {
+            append(snippet.text)
+            for (r in snippet.ranges) {
+                addStyle(
+                    SpanStyle(color = scheme.primary, fontWeight = FontWeight.SemiBold),
+                    r.first,
+                    r.last + 1,
+                )
+            }
+        }
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 2.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .combinedClickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 9.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                hit.sessionTitle.ifBlank { "Chat" },
+                style = MaterialTheme.typography.labelSmall,
+                color = scheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                formatRelativeTime(hit.createdAt),
+                style = MaterialTheme.typography.labelSmall,
+                color = scheme.onSurfaceVariant,
+            )
+        }
+        Text(
+            annotated,
+            style = MaterialTheme.typography.bodyMedium,
+            color = scheme.onSurface,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 2.dp),
+        )
+    }
+}
+
+@Composable
+private fun SessionAction(
+    label: String,
+    destructive: Boolean = false,
+    onClick: () -> Unit,
+) {
+    TextButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+        Text(
+            label,
+            color = if (destructive) MaterialTheme.colorScheme.error
+            else MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+@Composable
+private fun QuickActionStrip(
+    buildSelected: Boolean,
+    automationSelected: Boolean,
+    terminalSelected: Boolean,
+    onBuild: () -> Unit,
+    onAutomation: () -> Unit,
+    onTerminal: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        QuickActionButton(
+            icon = Icons.Outlined.CheckCircle,
+            label = "Build",
+            selected = buildSelected,
+            onClick = onBuild,
+        )
+        QuickActionButton(
+            icon = Icons.Outlined.AutoMode,
+            label = "Automate",
+            selected = automationSelected,
+            onClick = onAutomation,
+        )
+        QuickActionButton(
+            icon = Icons.Outlined.Terminal,
+            label = "Terminal",
+            selected = terminalSelected,
+            onClick = onTerminal,
+        )
+    }
+}
+
+@Composable
+private fun RowScope.QuickActionButton(
+    icon: ImageVector,
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val scheme = MaterialTheme.colorScheme
+    Surface(
+        onClick = onClick,
+        color = if (selected) scheme.secondaryContainer else scheme.surfaceContainer,
+        contentColor = if (selected) scheme.onSecondaryContainer else scheme.onSurfaceVariant,
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier.weight(1f),
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 9.dp),
+        ) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.height(4.dp))
+            Text(
+                label,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProviderDrawerRow(
+    selected: Boolean,
+    subtitle: String,
+    onClick: () -> Unit,
+) {
+    val scheme = MaterialTheme.colorScheme
+    Surface(
+        onClick = onClick,
+        color = if (selected) scheme.secondaryContainer else scheme.surfaceContainerHigh,
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 2.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
+        ) {
+            ProviderMark(size = 38.dp)
+            Spacer(Modifier.width(11.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Provider",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = if (selected) scheme.onSecondaryContainer else scheme.onSurface,
+                )
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (selected) scheme.onSecondaryContainer.copy(alpha = 0.76f)
+                    else scheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Icon(
+                Icons.Filled.KeyboardArrowDown,
+                contentDescription = null,
+                tint = if (selected) scheme.onSecondaryContainer else scheme.onSurfaceVariant,
+                modifier = Modifier
+                    .size(18.dp)
+                    .rotate(-90f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun DrawerRow(
+    icon: @Composable () -> Unit,
+    title: String,
+    subtitle: String? = null,
+    selected: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val scheme = MaterialTheme.colorScheme
+    Surface(
+        onClick = onClick,
+        color = if (selected) scheme.secondaryContainer else Color.Transparent,
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 2.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+        ) {
+            Surface(
+                color = if (selected) Color.Transparent else scheme.surfaceContainer,
+                contentColor = if (selected) scheme.onSecondaryContainer else scheme.onSurfaceVariant,
+                shape = RoundedCornerShape(9.dp),
+            ) {
+                Box(Modifier.size(32.dp), contentAlignment = Alignment.Center) {
+                    Box(Modifier.size(19.dp), contentAlignment = Alignment.Center) { icon() }
+                }
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = if (selected) scheme.onSecondaryContainer else scheme.onSurface,
+                )
+                if (subtitle != null) {
+                    Text(
+                        subtitle,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (selected) scheme.onSecondaryContainer.copy(alpha = 0.76f)
+                        else scheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Icon(
+                Icons.Filled.KeyboardArrowDown,
+                contentDescription = null,
+                tint = if (selected) scheme.onSecondaryContainer else scheme.onSurfaceVariant,
+                modifier = Modifier
+                    .size(18.dp)
+                    .rotate(-90f),
+            )
+        }
+    }
+}
+
+data class DateBoundaries(
+    val todayStart: Long,
+    val yesterdayStart: Long,
+    val weekStart: Long,
+) {
+    companion object {
+        fun now(): DateBoundaries {
+            val cal = Calendar.getInstance()
+            cal.set(Calendar.HOUR_OF_DAY, 0); cal.set(Calendar.MINUTE, 0)
+            cal.set(Calendar.SECOND, 0); cal.set(Calendar.MILLISECOND, 0)
+            val todayStart = cal.timeInMillis
+            val yesterdayStart = todayStart - 24L * 60 * 60 * 1000
+            cal.add(Calendar.DAY_OF_YEAR, -(cal.get(Calendar.DAY_OF_WEEK) - cal.firstDayOfWeek))
+            val weekStart = cal.timeInMillis
+            return DateBoundaries(todayStart, yesterdayStart, weekStart)
+        }
+    }
+}
+
+private fun sessionGroup(
+    session: SessionEntity,
+    settings: AppSettings,
+    boundaries: DateBoundaries,
+): SessionGroup {
+    if (session.id in settings.pinnedSessions) return SessionGroup.PINNED
+    if (session.id in settings.archivedSessions) return SessionGroup.ARCHIVED
+
+    return when {
+        session.updatedAt >= boundaries.todayStart -> SessionGroup.TODAY
+        session.updatedAt >= boundaries.yesterdayStart -> SessionGroup.YESTERDAY
+        session.updatedAt >= boundaries.weekStart -> SessionGroup.THIS_WEEK
+        else -> SessionGroup.OLDER
+    }
+}
+
+private fun encode(value: String): String =
+    URLEncoder.encode(value, StandardCharsets.UTF_8.toString())

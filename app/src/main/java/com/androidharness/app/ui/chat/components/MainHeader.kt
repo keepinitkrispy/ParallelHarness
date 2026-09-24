@@ -1,0 +1,422 @@
+package com.androidharness.app.ui.chat.components
+
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.outlined.EditNote
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.ForkRight
+import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Language
+import androidx.compose.material.icons.outlined.QueryStats
+import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material.icons.outlined.SwapHoriz
+import androidx.compose.material.icons.outlined.Terminal
+import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import com.androidharness.app.agent.AgentMode
+import com.androidharness.app.agent.PermissionMode
+import com.androidharness.app.agent.ThinkingLevel
+import com.androidharness.app.ui.theme.fastEffectsSpec
+
+/**
+ * The chat header: a single flat row.
+ *
+ * The old design spent two rows here (title + status, then a provider chip row).
+ * Now the subtitle line IS the provider switcher, "Provider · Model", tap to
+ * change, and doubles as the live status line while the agent works. Plan mode
+ * shows one small accent icon instead of a pill, the workspace-files explorer
+ * (migrated from the drawer) gets the header icon slot, and context usage
+ * lives in the overflow menu.
+ *
+ * The thinking control collapses to a bare icon at the default level and grows
+ * into a labelled badge only when a level is actually set, because the model
+ * name on the line below is the most important text here and it was the first
+ * thing to ellipsize on a narrow screen. There is one thinking menu, opened
+ * from either the badge or the overflow row, instead of two identical ones.
+ *
+ * The row is `heightIn(min = 60.dp)`, not a fixed 60, so a large system font
+ * scale grows the header instead of clipping the title.
+ */
+@Composable
+internal fun MainHeader(
+    sessionTitle: String,
+    busy: Boolean,
+    pickerLabel: String,
+    mode: AgentMode,
+    dualPlanning: Boolean = false,
+    thinkingLevel: ThinkingLevel,
+    /** Full global ladder, every model offers every rung (Hermes-style). */
+    thinkingLevels: List<ThinkingLevel>,
+    permissionMode: PermissionMode,
+    canUndo: Boolean,
+    onOpenDrawer: () -> Unit,
+    onPickModel: () -> Unit,
+    onOpenTerminal: () -> Unit,
+    onSetThinking: (ThinkingLevel) -> Unit,
+    onSetPermission: (PermissionMode) -> Unit,
+    onSetMode: (AgentMode) -> Unit,
+    onToggleDualPlanning: () -> Unit = {},
+    onOpenContext: () -> Unit,
+    onOpenUndo: () -> Unit,
+    onOpenFiles: () -> Unit,
+    onOpenWebPreview: () -> Unit = {},
+) {
+    var menu by remember { mutableStateOf(false) }
+    var thinkingMenu by remember { mutableStateOf(false) }
+    var permissionMenu by remember { mutableStateOf(false) }
+    val scheme = MaterialTheme.colorScheme
+    val thinkingOn = thinkingLevel != ThinkingLevel.OFF
+
+    Column(
+        Modifier
+            .background(scheme.surface)
+            .statusBarsPadding(),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 60.dp)
+                .padding(start = 4.dp, end = 4.dp),
+        ) {
+            IconButton(onClick = onOpenDrawer) {
+                Icon(Icons.Filled.Menu, contentDescription = "Open navigation")
+            }
+            Column(
+                Modifier
+                    .weight(1f)
+                    .padding(horizontal = 6.dp, vertical = 6.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (sessionTitle.startsWith("Fork of ")) {
+                        Icon(
+                            Icons.Outlined.ForkRight,
+                            contentDescription = "Forked session",
+                            tint = scheme.primary,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(4.dp))
+                    }
+                    Text(
+                        sessionTitle,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.titleMediumEmphasized,
+                    )
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable { onPickModel() },
+                ) {
+                    Text(
+                        pickerLabel,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = scheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    Spacer(Modifier.width(2.dp))
+                    Icon(
+                        Icons.Filled.KeyboardArrowDown,
+                        contentDescription = "Switch model",
+                        tint = scheme.onSurfaceVariant,
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
+            }
+
+            AnimatedVisibility(
+                visible = mode == AgentMode.PLAN || dualPlanning,
+                enter = fadeIn(fastEffectsSpec()) + scaleIn(fastEffectsSpec(), initialScale = 0.8f),
+                exit = fadeOut(fastEffectsSpec()) + scaleOut(fastEffectsSpec(), targetScale = 0.8f),
+            ) {
+                IconButton(onClick = { if (dualPlanning) onToggleDualPlanning() else onSetMode(AgentMode.ACT) }) {
+                    Icon(
+                        Icons.Outlined.ForkRight,
+                        contentDescription = if (dualPlanning) "Dual planning on: switch to Act" else "Plan mode on: switch to Act",
+                        tint = scheme.primary,
+                    )
+                }
+            }
+
+            Box(modifier = Modifier.padding(end = 2.dp)) {
+                Surface(
+                    onClick = { thinkingMenu = true },
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (thinkingOn) scheme.secondaryContainer else scheme.surfaceContainerHigh,
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(
+                            horizontal = if (thinkingOn) 7.dp else 6.dp,
+                            vertical = 4.dp,
+                        ),
+                    ) {
+                        Icon(
+                            Icons.Outlined.Tune,
+                            contentDescription = "Thinking level",
+                            modifier = Modifier.size(if (thinkingOn) 13.dp else 16.dp),
+                            tint = if (thinkingOn) scheme.onSecondaryContainer else scheme.onSurfaceVariant,
+                        )
+                        // The label and chevron only earn their width when a
+                        // non-default level is set; at OFF the icon alone says it.
+                        if (thinkingOn) {
+                            Spacer(Modifier.width(3.dp))
+                            Text(
+                                thinkingLevel.label,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = scheme.onSecondaryContainer,
+                                fontWeight = FontWeight.Medium,
+                            )
+                            Spacer(Modifier.width(2.dp))
+                            Icon(
+                                Icons.Filled.KeyboardArrowDown,
+                                contentDescription = null,
+                                modifier = Modifier.size(13.dp),
+                                tint = scheme.onSecondaryContainer,
+                            )
+                        }
+                    }
+                }
+
+                DropdownMenu(
+                    expanded = thinkingMenu,
+                    onDismissRequest = { thinkingMenu = false },
+                ) {
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                "Thinking level",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = scheme.onSurfaceVariant,
+                            )
+                        },
+                        onClick = {},
+                        enabled = false,
+                    )
+                    thinkingLevels.forEach { entry ->
+                        DropdownMenuItem(
+                            text = {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text(entry.label, Modifier.weight(1f))
+                                    if (entry == thinkingLevel) {
+                                        Icon(Icons.Filled.Check, contentDescription = "Selected", tint = scheme.primary)
+                                    }
+                                }
+                            },
+                            onClick = {
+                                onSetThinking(entry)
+                                thinkingMenu = false
+                            },
+                        )
+                    }
+                    HorizontalDivider(Modifier.padding(vertical = 4.dp))
+                    DropdownMenuItem(
+                        text = { Text("Switch model…") },
+                        leadingIcon = {
+                            Icon(Icons.Outlined.SwapHoriz, contentDescription = null, tint = scheme.primary)
+                        },
+                        onClick = {
+                            thinkingMenu = false
+                            onPickModel()
+                        },
+                    )
+                }
+            }
+
+            // Workspace files explorer, migrated here from the drawer;
+            // workspace switching itself lives inside the file manager.
+            IconButton(onClick = onOpenFiles) {
+                Icon(
+                    Icons.Outlined.Folder,
+                    contentDescription = "Workspace files",
+                    tint = scheme.onSurfaceVariant,
+                )
+            }
+
+            Box {
+                IconButton(onClick = { menu = true }) {
+                    Icon(Icons.Filled.MoreVert, contentDescription = "More options")
+                }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenuItem(
+                        text = { Text(if (mode == AgentMode.PLAN && !dualPlanning) "Act mode" else "Plan mode") },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Outlined.EditNote,
+                                contentDescription = null,
+                                tint = if (mode == AgentMode.PLAN && !dualPlanning) scheme.primary else scheme.onSurfaceVariant,
+                            )
+                        },
+                        trailingIcon = {
+                            if (mode == AgentMode.PLAN && !dualPlanning) {
+                                Icon(Icons.Filled.Check, contentDescription = "Enabled", tint = scheme.primary)
+                            }
+                        },
+                        onClick = {
+                            menu = false
+                            onSetMode(if (mode == AgentMode.PLAN && !dualPlanning) AgentMode.ACT else AgentMode.PLAN)
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Dual planning") },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Outlined.ForkRight,
+                                contentDescription = null,
+                                tint = if (dualPlanning) scheme.primary else scheme.onSurfaceVariant,
+                            )
+                        },
+                        trailingIcon = {
+                            if (dualPlanning) {
+                                Icon(Icons.Filled.Check, contentDescription = "Enabled", tint = scheme.primary)
+                            }
+                        },
+                        onClick = {
+                            menu = false
+                            onToggleDualPlanning()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Thinking · ${thinkingLevel.label}") },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Outlined.Tune,
+                                contentDescription = null,
+                                tint = if (thinkingOn) scheme.primary else scheme.onSurfaceVariant,
+                            )
+                        },
+                        trailingIcon = {
+                            Icon(
+                                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = scheme.onSurfaceVariant,
+                            )
+                        },
+                        onClick = { menu = false; thinkingMenu = true },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Permission · ${permissionMode.label}") },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Outlined.Shield,
+                                contentDescription = null,
+                                tint = when (permissionMode) {
+                                    PermissionMode.FULL_ACCESS -> FullAccessOrange
+                                    PermissionMode.FULL_AUTO -> scheme.error
+                                    PermissionMode.CONFIRM_RISKY -> scheme.primary
+                                    PermissionMode.CONFIRM_ALL -> scheme.onSurfaceVariant
+                                },
+                            )
+                        },
+                        trailingIcon = {
+                            Icon(
+                                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = scheme.onSurfaceVariant,
+                            )
+                        },
+                        onClick = { menu = false; permissionMenu = true },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Context & limits") },
+                        leadingIcon = {
+                            Icon(Icons.Outlined.QueryStats, contentDescription = null)
+                        },
+                        onClick = { menu = false; onOpenContext() },
+                    )
+                    HorizontalDivider(Modifier.padding(vertical = 6.dp))
+                    DropdownMenuItem(
+                        text = { Text("Terminal") },
+                        leadingIcon = { Icon(Icons.Outlined.Terminal, contentDescription = null) },
+                        onClick = { menu = false; onOpenTerminal() },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Web preview (localhost)") },
+                        leadingIcon = { Icon(Icons.Outlined.Language, contentDescription = null) },
+                        onClick = { menu = false; onOpenWebPreview() },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Undo file changes…") },
+                        leadingIcon = { Icon(Icons.Outlined.History, contentDescription = null) },
+                        enabled = canUndo,
+                        onClick = { menu = false; onOpenUndo() },
+                    )
+                }
+                DropdownMenu(expanded = permissionMenu, onDismissRequest = { permissionMenu = false }) {
+                    PermissionMode.entries.forEach { entry ->
+                        DropdownMenuItem(text = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    entry.label,
+                                    Modifier.weight(1f),
+                                    color = if (entry == PermissionMode.FULL_ACCESS) FullAccessOrange
+                                    else Color.Unspecified,
+                                )
+                                if (entry == permissionMode) {
+                                    Icon(
+                                        Icons.Filled.Check,
+                                        contentDescription = "Selected",
+                                        tint = if (entry == PermissionMode.FULL_ACCESS) FullAccessOrange
+                                        else scheme.primary,
+                                    )
+                                }
+                            }
+                        }, onClick = { onSetPermission(entry); permissionMenu = false })
+                    }
+                }
+            }
+        }
+        HorizontalDivider(color = scheme.outlineVariant.copy(alpha = 0.5f))
+    }
+}
+
+/** Accent for the Full access permission mode, warning orange, distinct from error red. */
+internal val FullAccessOrange = Color(0xFFF59E0B)
