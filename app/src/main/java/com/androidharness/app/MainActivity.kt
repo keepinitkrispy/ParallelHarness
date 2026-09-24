@@ -95,11 +95,8 @@ class MainActivity : FragmentActivity() {
                 themeMode = currentSettings.themeMode,
                 dynamicColor = currentSettings.dynamicColor,
             ) {
-                // Auto update check shortly after launch, once per process.
-                LaunchedEffect(Unit) {
-                    kotlinx.coroutines.delay(4_000)
-                    container.updates.check(manual = false)
-                }
+                // Parallel builds are updated explicitly through the control plane.
+                // Do not inherit AndroidHarness's upstream auto-update feed.
 
                 // Biometric lock prompt on start / when enabled.
                 LaunchedEffect(currentSettings.biometricLockEnabled) {
