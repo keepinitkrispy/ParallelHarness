@@ -170,9 +170,14 @@ class ShizukuManager(
         scope.launch {
             delay(2_000)
             refresh()
-            if (_state.value == ShizukuState.NOT_RUNNING) {
+            if (_state.value == ShizukuState.RUNNING_NO_PERMISSION) {
+                requestPermission()
+            } else if (_state.value == ShizukuState.NOT_RUNNING) {
                 delay(5_000)
                 refresh()
+                if (_state.value == ShizukuState.RUNNING_NO_PERMISSION) {
+                    requestPermission()
+                }
             }
         }
     }
