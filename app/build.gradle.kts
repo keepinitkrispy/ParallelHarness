@@ -11,7 +11,7 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "dev.keepinitkrispy.parallel.agent"
+        applicationId = "dev.keepinitkrispy.parallel.rishbridge"
         minSdk = 26
         targetSdk = 36
         versionCode = 5
@@ -31,6 +31,9 @@ android {
             val stableDebugKey = rootProject.file("signing-keys/debug.keystore")
             if (stableDebugKey.exists()) {
                 storeFile = stableDebugKey
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
             }
         }
     }

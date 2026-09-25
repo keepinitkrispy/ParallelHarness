@@ -22,6 +22,11 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease
+      - name: Verify APK signature
+        run: |
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          test -n "$APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
       - uses: actions/upload-artifact@v4
         with:
           name: Parallel-apk
@@ -31,4 +36,4 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="parallel-$GITHUB_RUN_NUMBER"
-          gh release create "$TAG" app/build/outputs/apk/release/app-release.apk --title "Parallel APK $GITHUB_RUN_NUMBER" --notes "Parallel Processing Android UI: local Qwen + execution kernel + Shizuku."
+          gh release create "$TAG" app/build/outputs/apk/release/app-release.apk --title "Parallel APK $GITHUB_RUN_NUMBER" --notes "Parallel Rish Bridge: stable-signed privileged execution bridge. No local model required."
