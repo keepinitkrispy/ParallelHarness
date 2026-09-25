@@ -42,6 +42,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.androidharness.app.data.AppSettings
 import com.androidharness.app.data.ScreenshotPolicy
+import com.androidharness.app.data.env.TermuxRishBootstrap
 import com.androidharness.app.data.update.UpdateIntents
 import com.androidharness.app.ui.AppNav
 import com.androidharness.app.ui.theme.HarnessTheme
@@ -59,17 +60,23 @@ class MainActivity : FragmentActivity() {
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
+    private val termuxRunPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) {
+                TermuxRishBootstrap.launch(this)
+                    .onFailure { android.util.Log.w("TermuxRishBootstrap", "launch failed", it) }
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         container = (application as HarnessApp).container
-        AgentService.startPersistent(this)
         lifecycleScope.launch {
             kotlinx.coroutines.delay(1200)
             container.shizuku.refresh()
-            if (container.shizuku.state.value == com.androidharness.app.data.env.ShizukuState.RUNNING_NO_PERMISSION) {
-                container.shizuku.requestPermission()
-            }
+            kotlinx.coroutines.delay(300)
+            bootstrapTermuxRishBridge()
         }
 
         // The foreground service + run-result notifications need this on 13+.
@@ -196,6 +203,17 @@ class MainActivity : FragmentActivity() {
                     onOpenUnknownSources = { UpdateIntents.openUnknownSourcesSettings(this) },
                 )
             }
+        }
+    }
+
+    private fun bootstrapTermuxRishBridge() {
+        if (ContextCompat.checkSelfPermission(this, TermuxRishBootstrap.PERMISSION) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            TermuxRishBootstrap.launch(this)
+                .onFailure { android.util.Log.w("TermuxRishBootstrap", "launch failed", it) }
+        } else {
+            termuxRunPermission.launch(TermuxRishBootstrap.PERMISSION)
         }
     }
 
