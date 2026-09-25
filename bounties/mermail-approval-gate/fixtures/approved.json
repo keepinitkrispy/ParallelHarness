@@ -1,0 +1,28 @@
+{
+  "request": {
+    "approver": "ops@example.com",
+    "thread_id": "thread-approval-42",
+    "request_message_id": "msg-request-42",
+    "sent_at": "2026-09-25T14:00:00Z",
+    "expires_at": "2026-09-25T16:00:00Z",
+    "token": "Q7uDk9pWv3mR",
+    "require_sender_auth_pass": true,
+    "proposal": {
+      "action": "deploy release",
+      "target": "production",
+      "artifact": "sha256:abc123",
+      "risk": "high"
+    }
+  },
+  "reply": {
+    "message_id": "msg-reply-42",
+    "thread_id": "thread-approval-42",
+    "from": "ops@example.com",
+    "date": "2026-09-25T14:10:00Z",
+    "scan_status": "clean",
+    "sender_authentication": {
+      "status": "pass"
+    },
+    "text": "APPROVE Q7uDk9pWv3mR 1120ff19a974"
+  }
+}
