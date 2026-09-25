@@ -15,6 +15,8 @@ import os
 import sys
 import urllib.error
 import urllib.request
+import subprocess
+import tempfile
 from pathlib import Path
 
 BASE = "https://superteam.fun"
@@ -85,8 +87,47 @@ def sanitized(obj):
     return obj
 
 
+def report_to_repo(safe: dict):
+    """Best-effort sanitized report back to the private SolBridge workspace."""
+    if not shutil_which("gh"):
+        return
+    report = {
+        "marker": "TERMUX_STREAMFLOW_RESULT_V1",
+        **safe,
+    }
+    claim = safe.get("claimCode")
+    if claim:
+        report["claimUrl"] = f"{BASE}/earn/claim/{claim}"
+    try:
+        with tempfile.NamedTemporaryFile("w", delete=False, prefix="streamflow-result-", suffix=".json") as fh:
+            json.dump(report, fh, indent=2)
+            fh.write("\n")
+            path = fh.name
+        os.chmod(path, 0o600)
+        subprocess.run(
+            ["gh", "issue", "comment", "571", "--repo", "keepinitkrispy/solbridge-bus", "--body-file", path],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+        )
+    except Exception:
+        pass
+    finally:
+        try:
+            os.unlink(path)
+        except Exception:
+            pass
+
+
+def shutil_which(name: str):
+    from shutil import which
+    return which(name)
+
+
 def finish(result: dict, code=0):
     safe = sanitized(result)
+    report_to_repo(safe)
     print(json.dumps(safe, indent=2))
     claim = safe.get("claimCode")
     if claim:
