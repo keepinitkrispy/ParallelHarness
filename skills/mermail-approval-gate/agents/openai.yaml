@@ -1,0 +1,11 @@
+interface:
+  display_name: "Mermail Approval Gate"
+  short_description: "Bind a human email decision to one immutable agent action."
+  default_prompt: "Use $mermail-approval-gate to request and verify a human decision for this exact proposed action without executing it."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "mermail"
+      description: "Mermail workspace and mailbox MCP server"
+      transport: "streamable_http"
+      url: "https://console.mermail.app/mcp"
