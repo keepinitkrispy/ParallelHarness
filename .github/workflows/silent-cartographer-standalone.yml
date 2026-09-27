@@ -23,13 +23,13 @@ jobs:
         run: |
           test -f silentcartographer/src/main/AndroidManifest.xml
           grep -q 'compileSdk = 37' silentcartographer/build.gradle.kts
-          grep -q 'versionName = "0.3.1"' silentcartographer/build.gradle.kts
+          grep -q 'versionName = "0.3.2"' silentcartographer/build.gradle.kts
       - name: Build standalone APK
         run: |
           chmod +x gradlew
           ./gradlew :silentcartographer:assembleDebug --stacktrace
       - uses: actions/upload-artifact@v4
         with:
-          name: Silent-Cartographer-0.3.1
+          name: Silent-Cartographer-0.3.2
           path: silentcartographer/build/outputs/apk/debug/silentcartographer-debug.apk
           if-no-files-found: error
