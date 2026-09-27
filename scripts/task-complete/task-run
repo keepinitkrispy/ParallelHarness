@@ -1,0 +1,21 @@
+#!/data/data/com.termux/files/usr/bin/python3
+import pathlib, subprocess, sys
+
+if len(sys.argv) < 6 or sys.argv[4] != '--':
+    raise SystemExit('usage: task-run TASK CURRENT_STEP SUCCESS_RESULT -- COMMAND [ARGS...]')
+task, step, result = sys.argv[1:4]
+command = sys.argv[5:]
+notify = str(pathlib.Path.home()/'.local/bin/task-status')
+def send(state, detail):
+    subprocess.run([notify, state, task, detail], check=True, timeout=18)
+send('start', step)
+try:
+    completed = subprocess.run(command, check=False)
+except Exception as exc:
+    send('failed', f'{step} failed: {exc}')
+    raise
+if completed.returncode == 0:
+    send('done', result)
+else:
+    send('failed', f'{step} exited with status {completed.returncode}; result unverified.')
+sys.exit(completed.returncode)

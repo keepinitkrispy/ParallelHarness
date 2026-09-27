@@ -1,9 +1,24 @@
 #!/data/data/com.termux/files/usr/bin/python3
-import json,subprocess,pathlib,datetime,sys
-h=pathlib.Path.home();ui=json.loads(subprocess.check_output([str(h/'.local/bin/ghostui'),'dump'],text=True))
-texts=list(dict.fromkeys(n['text'] for n in ui['nodes'] if n['visible'] and n['text']))
-packages=sorted(set(n['package'] for n in ui['nodes'] if n['package']))
-record={'capability_id':'ghost.catalog.snapshot','verification_time':datetime.datetime.now(datetime.timezone.utc).isoformat(),'mechanism':'virtual_ui','display':ui['display'],'providers':packages,'texts':texts,'source_urls':[t for t in texts if t.startswith('https://github.com/')],'verified':'observed UI content; candidate claims not execution-tested'}
-d=h/'.local/state/capability-cartographer';d.mkdir(exist_ok=True)
-with (d/'catalog-discoveries.jsonl').open('a') as f:f.write(json.dumps(record)+'\n')
-print(json.dumps(record,ensure_ascii=False))
+import json,subprocess,pathlib,datetime
+h=pathlib.Path.home();notify=h/'.local/bin/task-status';task='Hidden app discovery'
+def status(stage,detail):
+    subprocess.run([str(notify),stage,task,detail],check=True,timeout=18,
+                   stdout=subprocess.DEVNULL)
+status('start','Reading the app currently open on the hidden display.')
+try:
+    ui=json.loads(subprocess.check_output([str(h/'.local/bin/ghostui'),'dump'],text=True,timeout=35))
+    texts=list(dict.fromkeys(n['text'] for n in ui['nodes'] if n['visible'] and n['text']))
+    packages=sorted(set(n['package'] for n in ui['nodes'] if n['package']))
+    if not texts:raise RuntimeError('No visible app details to record')
+    urls=[t for t in texts if t.startswith('https://github.com/')]
+    record={'capability_id':'ghost.catalog.snapshot','verification_time':datetime.datetime.now(datetime.timezone.utc).isoformat(),'mechanism':'virtual_ui','display':ui['display'],'providers':packages,'texts':texts,'source_urls':urls,'verified':'observed UI content; candidate claims not execution-tested'}
+    d=h/'.local/state/capability-cartographer';d.mkdir(exist_ok=True)
+    with (d/'catalog-discoveries.jsonl').open('a') as f:f.write(json.dumps(record)+'\n')
+    app=texts[0];version=next((t for t in texts if ' · GitHub' in t),'version unlisted')
+    permission=next((t for t in texts if ' permission' in t),'permissions unlisted')
+    source=urls[0] if urls else 'no source link shown'
+    status('done',f'Recorded {app}: {version}; {permission}; source {source}.')
+    print(json.dumps(record,ensure_ascii=False))
+except Exception as exc:
+    status('failed',f'App discovery stopped: {type(exc).__name__}: {str(exc)[:180]}')
+    raise

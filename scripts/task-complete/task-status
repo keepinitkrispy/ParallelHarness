@@ -1,0 +1,22 @@
+#!/data/data/com.termux/files/usr/bin/python3
+import datetime, json, pathlib, shlex, subprocess, sys
+
+if len(sys.argv) != 4 or sys.argv[1] not in ('start', 'step', 'done', 'failed'):
+    raise SystemExit('usage: task-status start|step|done|failed TASK DETAIL')
+state, task, detail = sys.argv[1:]
+if not task.strip() or not detail.strip():
+    raise SystemExit('task and detail must be nonempty')
+labels = {'start':'Working', 'step':'Working', 'done':'Completed', 'failed':'Needs attention'}
+title = f'{labels[state]}: {task.strip()[:55]}'
+body = detail.strip()[:350]
+cmd = 'cmd notification post -t '+shlex.quote(title)+' agent-progress '+shlex.quote(body)
+proc = subprocess.run(['adb','shell',cmd],text=True,capture_output=True,timeout=12)
+if proc.returncode != 0 or 'posting for user' not in proc.stdout:
+    raise SystemExit(proc.stderr or proc.stdout or 'Notification failed')
+folder = pathlib.Path.home()/'.local/state/capability-cartographer'
+folder.mkdir(parents=True,exist_ok=True)
+event = {'time':datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    'state':state,'task':task,'detail':detail,'notification':title}
+with (folder/'task-events.jsonl').open('a') as f:
+    f.write(json.dumps(event,ensure_ascii=False)+'\n')
+print(json.dumps(event,ensure_ascii=False))
