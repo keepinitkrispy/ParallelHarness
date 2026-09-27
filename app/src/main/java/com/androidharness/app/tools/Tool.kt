@@ -87,6 +87,8 @@ class ToolRegistry(private val tools: List<Tool>) {
                 EnvStatusTool(shizuku, linuxEnv, shellRouter),
                 DoctorTool(linuxEnv, shizuku, shellRouter, httpClient),
                 ReadLogcatTool(shizuku),
+                NotificationListTool(),
+                NotificationActionTool(),
                 PkgInstallTool(linuxEnv),
                 PkgSearchTool(linuxEnv),
                 PkgListTool(linuxEnv),
