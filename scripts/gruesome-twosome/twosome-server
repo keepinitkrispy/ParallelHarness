@@ -20,6 +20,32 @@ def read_events():
             pass
     return out
 
+def repair_legacy_provenance():
+    if not EVENTS.exists():
+        return
+    changed = False
+    rows = []
+    legacy = "Bridge test two: each of you say hello to the other in one short sentence."
+    for line in EVENTS.read_text(errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except Exception:
+            continue
+        if event.get("speaker") == "Ryan" and event.get("text") == legacy:
+            event["speaker"] = "Test harness"
+            event["status"] = "synthetic"
+            event["corrected_from_speaker"] = "Ryan"
+            event["correction_reason"] = "Not user-authored; generated for bridge testing"
+            changed = True
+        rows.append(event)
+    if changed:
+        EVENTS.write_text(
+            "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in rows),
+            encoding="utf-8",
+        )
+
 def append_event(speaker, text, kind="message", status="observed", source=None):
     event = {
         "id": uuid.uuid4().hex,
@@ -142,4 +168,5 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 if __name__ == "__main__":
+    repair_legacy_provenance()
     ThreadingHTTPServer(("127.0.0.1", 49174), Handler).serve_forever()
