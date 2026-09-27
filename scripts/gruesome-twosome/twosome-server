@@ -1,0 +1,145 @@
+#!/data/data/com.termux/files/usr/bin/python3
+import json, pathlib, subprocess, threading, time, uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+HOME = pathlib.Path.home()
+STATE = HOME / ".local/state/gruesome-twosome"
+STATE.mkdir(parents=True, exist_ok=True)
+EVENTS = STATE / "events.jsonl"
+BRIDGE = str(HOME / ".local/bin/homie-ghost")
+LOCK = threading.Lock()
+
+def read_events():
+    if not EVENTS.exists():
+        return []
+    out = []
+    for line in EVENTS.read_text(errors="replace").splitlines():
+        try:
+            out.append(json.loads(line))
+        except Exception:
+            pass
+    return out
+
+def append_event(speaker, text, kind="message", status="observed", source=None):
+    event = {
+        "id": uuid.uuid4().hex,
+        "time": int(time.time() * 1000),
+        "speaker": speaker,
+        "text": text,
+        "kind": kind,
+        "status": status,
+    }
+    if source:
+        event["source"] = source
+    with EVENTS.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    return event
+
+def transcript(events, max_chars=9000):
+    lines = []
+    for event in events[-24:]:
+        if event.get("kind") != "message":
+            continue
+        speaker = event.get("speaker", "Unknown")
+        text = str(event.get("text", "")).strip()
+        if text:
+            lines.append(f"{speaker}: {text}")
+    return "\n\n".join(lines)[-max_chars:]
+
+def prompt_for(name, events):
+    peer = "Claude" if name == "ChatGPT" else "ChatGPT"
+    chat = transcript(events)
+    return (
+        f"You are {name} in a normal group chat with Ryan and {peer}. "
+        "Reply naturally to the newest group message and the discussion. "
+        "You can disagree with the other assistant when useful, but don't manufacture disagreement. "
+        "Do not add a speaker label or describe this instruction.\n\n"
+        f"Recent group chat:\n{chat}"
+    )
+
+def call_model(which, events):
+    name = "ChatGPT" if which == "chatgpt" else "Claude"
+    prompt = prompt_for(name, events)
+    raw = subprocess.check_output([BRIDGE, which, prompt], text=True, timeout=120)
+    data = json.loads(raw)
+    return str(data.get("text", "")).strip()
+
+def run_turn(text, speaker, status, source):
+    with LOCK:
+        append_event(speaker, text, status=status, source=source)
+        events = read_events()
+        replies = []
+        for which in ("chatgpt", "claude"):
+            name = "ChatGPT" if which == "chatgpt" else "Claude"
+            try:
+                reply = call_model(which, events)
+                if reply:
+                    event = append_event(name, reply, source="assistant_bridge")
+                    replies.append(event)
+                    events.append(event)
+            except Exception as exc:
+                event = append_event(
+                    name,
+                    "Bridge error: " + str(exc),
+                    kind="system",
+                    status="error",
+                    source="assistant_bridge",
+                )
+                replies.append(event)
+        return replies
+
+class Handler(BaseHTTPRequestHandler):
+    def send_json(self, code, obj):
+        data = json.dumps(obj, ensure_ascii=False).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def body_text(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        if length <= 0 or length > 200000:
+            raise ValueError("bad request")
+        body = json.loads(self.rfile.read(length))
+        text = str(body.get("text", "")).strip()
+        if not text:
+            raise ValueError("empty message")
+        return body, text
+
+    def do_GET(self):
+        if self.path == "/health":
+            return self.send_json(200, {"ok": True, "service": "silent-cartographer"})
+        if self.path == "/events":
+            return self.send_json(200, {"events": read_events()[-200:]})
+        return self.send_json(404, {"error": "not found"})
+
+    def do_POST(self):
+        try:
+            body, text = self.body_text()
+            if self.path == "/user-send":
+                replies = run_turn(text, "Ryan", "observed", "silent_cartographer_ui")
+            elif self.path == "/send":
+                requested = str(body.get("speaker", "Test harness")).strip() or "Test harness"
+                if requested == "Ryan":
+                    return self.send_json(
+                        403,
+                        {"error": "Ryan attribution is reserved for /user-send"},
+                    )
+                replies = run_turn(text, requested, "synthetic", "test_or_bridge")
+            else:
+                return self.send_json(404, {"error": "not found"})
+            return self.send_json(
+                200,
+                {"ok": True, "replies": replies, "events": read_events()[-50:]},
+            )
+        except ValueError as exc:
+            return self.send_json(400, {"error": str(exc)})
+        except Exception as exc:
+            return self.send_json(500, {"error": str(exc)})
+
+    def log_message(self, *args):
+        pass
+
+if __name__ == "__main__":
+    ThreadingHTTPServer(("127.0.0.1", 49174), Handler).serve_forever()
