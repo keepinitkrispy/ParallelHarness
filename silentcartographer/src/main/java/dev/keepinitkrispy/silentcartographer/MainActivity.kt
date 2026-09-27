@@ -1,5 +1,7 @@
 package dev.keepinitkrispy.silentcartographer
 
+import android.net.LocalSocket
+import android.net.LocalSocketAddress
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -55,10 +57,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -360,18 +360,22 @@ private suspend fun fetchEvents(): List<RoomEvent> = withContext(Dispatchers.IO)
 }
 
 private suspend fun postMessage(text: String) = withContext(Dispatchers.IO) {
-    val payload = JSONObject().put("text", text).toString()
-    val body = payload.toRequestBody("application/json; charset=utf-8".toMediaType())
-    val request = Request.Builder()
-        .url(ROOM_BASE + "/user-send")
-        .post(body)
-        .build()
-
-    roomHttp.newCall(request).execute().use { response ->
-        if (!response.isSuccessful) {
-            val detail = response.body?.string().orEmpty().take(240)
-            val suffix = if (detail.isBlank()) "" else ": " + detail
-            error("Bridge send failed (" + response.code + ")" + suffix)
+    LocalSocket().use { socket ->
+        socket.soTimeout = 180_000
+        socket.connect(
+            LocalSocketAddress(
+                "silent_cartographer_ui_v1",
+                LocalSocketAddress.Namespace.ABSTRACT,
+            )
+        )
+        val payload = JSONObject().put("text", text).toString() + "\n"
+        socket.outputStream.write(payload.toByteArray(Charsets.UTF_8))
+        socket.outputStream.flush()
+        val response = socket.inputStream.bufferedReader(Charsets.UTF_8).readLine()
+            ?: error("Local bridge closed without a response")
+        val result = JSONObject(response)
+        if (!result.optBoolean("ok")) {
+            error(result.optString("error", "Local bridge rejected the message"))
         }
     }
 }
