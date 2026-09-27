@@ -33,9 +33,9 @@ jobs:
         working-directory: scbuild
         env:
           ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-        run: ./gradlew --no-daemon --max-workers=4 :app:assembleDebug --stacktrace
+        run: ./gradlew --no-daemon --max-workers=4 :silentcartographer:assembleDebug --stacktrace
       - uses: actions/upload-artifact@v4
         with:
           name: SilentCartographer-debug-apk
-          path: scbuild/app/build/outputs/apk/debug/*.apk
+          path: scbuild/silentcartographer/build/outputs/apk/debug/*.apk
           if-no-files-found: error
