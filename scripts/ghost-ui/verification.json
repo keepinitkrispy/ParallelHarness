@@ -1,0 +1,28 @@
+{
+  "capability_id": "ghost.semantic_ui",
+  "semantic_name": "Observe and select UI on off-screen display",
+  "mechanism": "virtual_ui",
+  "invocation": "ghostui dump | ghostui click FIELD VALUE PACKAGE",
+  "authority_required": "local adb shell UiAutomation",
+  "needs_screen": false,
+  "display_safe": "verified ShizuStore routes only; F-Droid child activities escape",
+  "verified": true,
+  "verification_time": "2026-09-27T03:26:51.645223+00:00",
+  "known_failure_modes": [
+    "child task migration to display 0",
+    "ambiguity rejected",
+    "late/new-task escape not prevented",
+    "hidden API version drift"
+  ],
+  "compounds_to": "ghostcatalog live store candidate acquisition",
+  "evidence": [
+    "shizu-before.txt",
+    "shizu-after.txt",
+    "pensum.json",
+    "pensum-detail.json"
+  ],
+  "not_verified": [
+    "set-text",
+    "universal display containment"
+  ]
+}
