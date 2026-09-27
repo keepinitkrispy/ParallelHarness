@@ -169,12 +169,10 @@ fun AppNav(container: AppContainer) {
     // Stay on setup until Skip or Start harness. Connecting a provider used
     // to flip this and remount NavHost onto chat mid-flow.
     val needsSetup = !settings.onboardingDone
-    val lastSession = settings.lastActiveSessionId?.takeIf { settings.resumeLastChat }
     val startDestination = remember {
         when {
             needsSetup -> "setup"
-            !lastSession.isNullOrBlank() -> "chat/$lastSession"
-            else -> "chat"
+            else -> "cartographer"
         }
     }
 
