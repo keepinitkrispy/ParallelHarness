@@ -429,13 +429,13 @@ private suspend fun fetchHealth(): RuntimeHealth = withContext(Dispatchers.IO) {
 
 private suspend fun postMessage(text: String) = withContext(Dispatchers.IO) {
     LocalSocket().use { socket ->
-        socket.soTimeout = 180_000
         socket.connect(
             LocalSocketAddress(
                 "silent_cartographer_ui_v1",
                 LocalSocketAddress.Namespace.ABSTRACT,
             )
         )
+        socket.soTimeout = 180_000
         val payload = JSONObject().put("text", text).toString() + "\n"
         socket.outputStream.write(payload.toByteArray(Charsets.UTF_8))
         socket.outputStream.flush()
