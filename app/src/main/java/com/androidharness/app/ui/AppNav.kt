@@ -110,6 +110,7 @@ import com.androidharness.app.data.db.ChatSearch
 import com.androidharness.app.data.db.SessionEntity
 import com.androidharness.app.ui.chat.ChatScreen
 import com.androidharness.app.ui.chat.ChatViewModel
+import com.androidharness.app.ui.cartographer.SilentCartographerScreen
 import com.androidharness.app.ui.buildtest.BuildTestScreen
 import com.androidharness.app.ui.common.HarnessMark
 import com.androidharness.app.ui.common.ProviderMark
@@ -632,6 +633,16 @@ fun AppNav(container: AppContainer) {
                         },
                     )
                     Spacer(Modifier.height(8.dp))
+                    DrawerRow(
+                        icon = { Icon(Icons.Outlined.AutoMode, contentDescription = null) },
+                        title = "Silent Cartographer",
+                        subtitle = "Ryan · ChatGPT · Claude",
+                        selected = currentRoute == "cartographer",
+                        onClick = {
+                            scope.launch { drawerState.close() }
+                            nav.navigate("cartographer")
+                        },
+                    )
                     ProviderDrawerRow(
                         selected = currentRoute == "providers",
                         subtitle = run {
@@ -678,6 +689,14 @@ fun AppNav(container: AppContainer) {
                     slideOutVertically(tween(200, easing = FastOutSlowInEasing)) { it / 28 }
             },
         ) {
+            composable("cartographer") {
+                SilentCartographerScreen(
+                    onOpenDrawer = {
+                        focusManager.clearFocus(force = true)
+                        scope.launch { drawerState.open() }
+                    },
+                )
+            }
             composable("chat") {
                 val vm: ChatViewModel = viewModel(factory = ChatViewModel.factory(container, null))
                 ChatScreen(
