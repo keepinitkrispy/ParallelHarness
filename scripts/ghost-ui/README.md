@@ -36,3 +36,9 @@ F-Droid Repositories / Navigate up moved its task to physical display 0 even whe
 Wrapper detects an existing ghost task that changed displays immediately after an action, moves it back, and reports escape. This is recovery, NOT preventive containment; brief disruption, late transitions and newly created tasks remain possible. ShizuStore tested routes remained on display 3. Snapshot checks cannot exclude every transient change.
 
 No perpetual polling or workloads are installed. Thermal status 0 at start, 1 at end; experiments stopped after verification.
+
+## Callable Claude Pro app (tested 2026-09-27)
+
+`claude-ghost PROMPT` uses the already signed-in Claude Android app on display 3. It selects its unique editable node, sets the prompt through the accessibility action, selects the `Send` control by description, and reads newly appearing response text. It runs through `task-run`, so the user gets start/result notifications and can pause an active call from Task Review. No API key, local model, physical-display takeover, or screenshot is required. It does use the user's Claude subscription; account limits and app UI can change.
+
+Proof: two prompts and two responses were sent/read. The first returned `getWindowsOnAllDisplays()`, matching `GhostUI.java`'s actual method. The second produced an inaccurate technical suggestion; model output must be checked against Android APIs and live tests before acting. The physical display remained independently on Gmail in the first proof. Output records observed UI text, not a verified fact. The wrapper currently assumes a unique `EditText` and a control described `Send`; it fails if these change rather than touching display 0.

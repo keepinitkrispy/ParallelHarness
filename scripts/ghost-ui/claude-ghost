@@ -1,0 +1,50 @@
+#!/data/data/com.termux/files/usr/bin/python3
+import json,os,pathlib,subprocess,sys,time
+home=pathlib.Path.home()
+if '--call' not in sys.argv:
+    if len(sys.argv)<2:raise SystemExit('usage: claude-ghost PROMPT')
+    prompt=' '.join(sys.argv[1:])
+    os.execv(str(home/'.local/bin/task-run'),[str(home/'.local/bin/task-run'),
+       'Claude second opinion',
+       'Use the existing signed-in Claude Pro app as a second reasoning tool without API payment or taking your screen.',
+       'Submitting a question on the hidden display and reading the reply.',
+       'Claude replied on the hidden display.',
+       '--',sys.executable,__file__,'--call',prompt])
+prompt=sys.argv[2]
+if len(prompt)>4000:raise SystemExit('Prompt exceeds 4000 characters')
+ui=str(home/'.local/bin/ghostui')
+def dump():
+    raw=subprocess.check_output([ui,'dump'],text=True,timeout=30)
+    return json.loads(raw)
+def texts(obj):
+    return [n['text'].strip() for n in obj['nodes']
+        if n['package']=='com.anthropic.claude' and n['visible']
+        and n['class']=='android.widget.TextView' and n['text'].strip()]
+before=dump()
+if not any(w['title']=='Claude' for w in before['windows']):
+    subprocess.run(['adb','shell','am','start','--display','3','-n',
+        'com.anthropic.claude/.mainactivity.MainActivity'],check=True,timeout=15,
+        stdout=subprocess.DEVNULL)
+    before=dump()
+old=set(texts(before))
+subprocess.run([ui,'set-text','class','android.widget.EditText',
+    'com.anthropic.claude',prompt],check=True,timeout=35,stdout=subprocess.DEVNULL)
+subprocess.run([ui,'click','description','Send','com.anthropic.claude'],
+    check=True,timeout=35,stdout=subprocess.DEVNULL)
+ignore={'Reply to Claude…','Claude is AI and can make mistakes.','Sonnet 5','Medium'}
+last=None;stable=0;answer=[]
+for _ in range(12):
+    time.sleep(2)
+    view=dump()
+    found=[t for t in texts(view) if t not in old and t!=prompt and t not in ignore]
+    if found:
+        stable=stable+1 if found==last else 0
+        last=found
+        if stable>=1:answer=found;break
+if not answer:raise RuntimeError('No stable Claude reply observed on hidden display')
+result={'provider':'Claude Android app via ghost display','display':3,
+        'question':prompt,'answer':'\n'.join(answer),'verified':'reply observed in UI; factual content not independently verified'}
+out=os.environ.get('TASK_RESULT_FILE')
+if out:pathlib.Path(out).write_text('Claude replied on display 3: '+result['answer'][:220])
+print(json.dumps(result,ensure_ascii=False))
+
