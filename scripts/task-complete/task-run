@@ -1,21 +1,56 @@
 #!/data/data/com.termux/files/usr/bin/python3
-import pathlib, subprocess, sys
-
-if len(sys.argv) < 6 or sys.argv[4] != '--':
-    raise SystemExit('usage: task-run TASK CURRENT_STEP SUCCESS_RESULT -- COMMAND [ARGS...]')
-task, step, result = sys.argv[1:4]
-command = sys.argv[5:]
-notify = str(pathlib.Path.home()/'.local/bin/task-status')
-def send(state, detail):
-    subprocess.run([notify, state, task, detail], check=True, timeout=18)
-send('start', step)
+import datetime, json, os, pathlib, signal, socket, subprocess, sys, time, uuid, urllib.request
+if len(sys.argv) < 7 or sys.argv[5] != '--':
+    raise SystemExit('usage: task-run TASK WHY CURRENT_STEP VERIFIED_RESULT -- COMMAND [ARGS...]')
+task, why, step, result = sys.argv[1:5]; command=sys.argv[6:]
+home=pathlib.Path.home();root=home/'.local/state/capability-cartographer/tasks'
+root.mkdir(parents=True,exist_ok=True)
+token=uuid.uuid4().hex; file=root/(token+'.json')
+notify=str(home/'.local/bin/task-status')
+def save(state):
+    temp=file.with_suffix('.tmp');temp.write_text(json.dumps(state,ensure_ascii=False));os.replace(temp,file)
+def load():return json.loads(file.read_text())
+def start_server():
+    try:
+        with urllib.request.urlopen('http://127.0.0.1:49173/health',timeout=.5) as resp:
+            if resp.read()!=b'task-review-ready':raise RuntimeError('Review port belongs to another service')
+            return
+    except (OSError,urllib.error.URLError):pass
+    log=(root/'review-server.log').open('ab')
+    subprocess.Popen([str(home/'.local/bin/task-review-server')],stdout=log,stderr=log,
+                     start_new_session=True,stdin=subprocess.DEVNULL)
+    for _ in range(30):
+        time.sleep(.1)
+        try:
+            with urllib.request.urlopen('http://127.0.0.1:49173/health',timeout=.3) as resp:
+                if resp.read()==b'task-review-ready':return
+        except (OSError,urllib.error.URLError):pass
+    raise RuntimeError('Task review service could not start')
+state={'token':token,'task':task,'why':why,'current':step,'status':'preparing',
+       'events':[f'Started: {why}',f'Current: {step}'],'pause_requested':False}
+save(state);start_server()
+def status(kind,detail):
+    subprocess.run([notify,kind,task,detail,token],check=True,timeout=18)
+status('start',f'{why} Current: {step} Tap to pause and inspect.')
 try:
-    completed = subprocess.run(command, check=False)
+    child=subprocess.Popen(command,start_new_session=True,env={**os.environ,"TASK_REVIEW_TOKEN":token,"TASK_RESULT_FILE":str(file.with_suffix('.result'))})
+    state=load();state['pid']=child.pid
+    state['proc_start']=pathlib.Path(f'/proc/{child.pid}/stat').read_text().rsplit(')',1)[1].split()[19]
+    if state.get('pause_requested'):
+        os.killpg(child.pid,signal.SIGSTOP);state['status']='paused'
+        state['current']='Paused because you opened the task.'
+    else:state['status']='running'
+    save(state)
+    code=child.wait();state=load();state['status']='completed' if code==0 else 'failed'
+    result_file=file.with_suffix('.result')
+    if code==0 and result_file.exists():result=result_file.read_text().strip() or result
+    state['current']=result if code==0 else f'Exited with status {code}; result unverified.'
+    state['events'].append(state['current']);save(state)
+    status('done' if code==0 else 'failed',state['current'])
+    sys.exit(code)
 except Exception as exc:
-    send('failed', f'{step} failed: {exc}')
+    state=load();state['status']='failed';state['current']=str(exc)
+    state['events'].append(state['current']);save(state)
+    status('failed',state['current'])
     raise
-if completed.returncode == 0:
-    send('done', result)
-else:
-    send('failed', f'{step} exited with status {completed.returncode}; result unverified.')
-sys.exit(completed.returncode)
+

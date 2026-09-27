@@ -1,0 +1,13 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+  package="dev.keepinitkrispy.taskreview">
+  <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35"/>
+  <uses-permission android:name="android.permission.INTERNET"/>
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+  <application android:label="Task Review" android:usesCleartextTraffic="true">
+    <receiver android:name=".TaskStatusReceiver" android:exported="true"
+      android:permission="android.permission.DUMP">
+      <intent-filter><action android:name="dev.keepinitkrispy.taskreview.STATUS"/></intent-filter>
+    </receiver>
+    <activity android:name=".TaskReviewActivity" android:exported="true" android:permission="android.permission.DUMP"/>
+  </application>
+</manifest>

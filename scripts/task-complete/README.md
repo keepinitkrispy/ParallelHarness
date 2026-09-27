@@ -1,17 +1,15 @@
-# Hidden task status on Pixel
+# Hidden task review on Pixel
 
-`task-status start|step|done|failed TASK DETAIL` posts an Android notification with the task name and concrete current action or observed result. It records each event in `~/.local/state/capability-cartographer/task-events.jsonl`. It uses the existing phone-local ADB connection and Android's shell notification service; no Termux:API process or approval prompt is needed.
+A task launched with `task-run TASK WHY CURRENT_STEP VERIFIED_RESULT -- COMMAND` posts one start notification naming the task and reason. It opens a local detail page when tapped; that request sends SIGSTOP to the task's process group. The page shows reason, current status and meaningful updates, with a Resume button that sends SIGCONT. Completion or failure replaces the same task notification with its actual result. `task-status milestone TASK DETAIL TOKEN` can send an occasional substantive update. Individual shell commands and UI taps do not notify.
 
-`task-run TASK CURRENT_STEP SUCCESS_RESULT -- COMMAND [ARGS...]` posts a start event, runs the command, and posts completion only after exit 0. The caller must supply a result that the command actually verifies. On failure it posts a failure event. Long tasks can call `task-status step` during execution.
+The tiny Task Review app owns notification PendingIntents. Shell notifications cannot attach a working tap action on this Pixel. Source/build instructions are under `android/`; its manifest restricts shell broadcast to callers with Android DUMP permission. The review service binds only 127.0.0.1:49173, uses an unguessable token in each page URL, and does not poll. A local event ledger is `~/.local/state/capability-cartographer/task-events.jsonl`. Task records are in `tasks/<token>.json`.
 
-The updated `ghostcatalog` calls this channel automatically: it names the app being read on the ghost display and reports the extracted version, permission count, and repository after saving the snapshot.
+Installed on Pixel:
+- `~/.local/bin/task-status`, `task-run`, and `task-review-server`
+- `dev.keepinitkrispy.taskreview` APK signed with a device-local key
+- `~/.termux/boot/start-task-review` starts the lightweight review service after reboot
+- `ghostcatalog` is wrapped in `task-run` and reports actual app/version/permission/source findings.
 
-This covers jobs launched through these wrappers and ParallelHarness's existing run notifications. It does not intercept arbitrary ChatGPT tasks or other Android apps. Android's `cmd notification post` uses one notification ID, so the latest state replaces the prior visible status; the JSONL retains event history.
+Verify with a harmless timed job. Start `task-run 'Pause test' 'Verify pause' 'Waiting' 'Finished' -- sleep 30`; open its notification, verify the page shows Paused and the process is T (stopped), then press Resume. The completed record should show the outcome. The Pixel's physical screen is intentionally used only when the user opens the task.
 
-Install:
-
-```sh
-cp scripts/task-complete/task-{status,run} ~/.local/bin/
-cp scripts/ghost-ui/ghostcatalog ~/.local/bin/
-chmod 755 ~/.local/bin/task-{status,run} ~/.local/bin/ghostcatalog
-```
+Scope: these notifications cover work launched through the runner. ParallelHarness has its own independent agent-run notifications. This does not intercept every ChatGPT conversation or arbitrary Android process. If Android kills the review service, task-run starts it for the next job; a prior notification shows an explanatory fallback page until it restarts. The shell notification experiment did not support a tap action and has been superseded.
