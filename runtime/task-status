@@ -1,0 +1,47 @@
+#!/data/data/com.termux/files/usr/bin/python3
+import datetime, fcntl, json, os, pathlib, re, shlex, subprocess, sys
+TMP = pathlib.Path.home()/'.tmp'; TMP.mkdir(parents=True, exist_ok=True)
+ADB_ENV = {**os.environ, 'TMPDIR': str(TMP)}
+if len(sys.argv) not in (4,5) or sys.argv[1] not in ('start','milestone','done','failed'):
+    raise SystemExit('usage: task-status start|milestone|done|failed TASK DETAIL [TOKEN]')
+state,task,detail=sys.argv[1:4]
+if not task.strip() or not detail.strip():raise SystemExit('task and detail required')
+token=sys.argv[4] if len(sys.argv)==5 else None
+if token and not re.fullmatch(r'[a-f0-9]{32}',token):raise SystemExit('bad task token')
+if token:
+    task_file=pathlib.Path.home()/'.local/state/capability-cartographer/tasks'/(token+'.json')
+    if not task_file.is_file(): raise SystemExit('unknown task token')
+    extras=['--es','token',token,'--es','state',state,'--es','task',task,'--es','detail',detail]
+    cmd='am broadcast -a dev.keepinitkrispy.silentcartographer.STATUS -n dev.keepinitkrispy.silentcartographer/.TaskStatusReceiver '+shlex.join(extras)
+    proc=subprocess.run(['adb','shell',cmd],text=True,capture_output=True,timeout=12,env=ADB_ENV)
+    if proc.returncode or 'Broadcast completed: result=0' not in proc.stdout:
+        raise SystemExit(proc.stderr or proc.stdout or 'Broadcast failed')
+else:
+    prefix={'start':'Started','milestone':'Updated','done':'Completed','failed':'Needs attention'}[state]
+    cmd='cmd notification post -t '+shlex.quote(f'{prefix}: {task[:55]}')+' agent-progress '+shlex.quote(detail[:350])
+    proc=subprocess.run(['adb','shell',cmd],text=True,capture_output=True,timeout=12,env=ADB_ENV)
+    if proc.returncode or 'posting for user' not in proc.stdout:
+        raise SystemExit(proc.stderr or proc.stdout or 'Notification failed')
+folder=pathlib.Path.home()/'.local/state/capability-cartographer';folder.mkdir(parents=True,exist_ok=True)
+event={'time':datetime.datetime.now(datetime.timezone.utc).isoformat(),
+       'state':state,'task':task,'detail':detail,'token':token}
+with (folder/'task-events.jsonl').open('a') as f:f.write(json.dumps(event,ensure_ascii=False)+'\n')
+if token and state=='milestone':
+    tasks=folder/'tasks'
+    file=tasks/(token+'.json')
+    if file.exists():
+        with (tasks/(token+'.lock')).open('a') as lock:
+            fcntl.flock(lock,fcntl.LOCK_EX)
+            try:
+                if file.exists():
+                    item=json.loads(file.read_text())
+                    if item.get('status') in ('preparing','awaiting_approval','running','paused'):
+                        item['current']=detail
+                        item['events'].append(detail)
+                        tmp=file.with_suffix('.tmp')
+                        tmp.write_text(json.dumps(item,ensure_ascii=False))
+                        os.replace(tmp,file)
+            finally:
+                fcntl.flock(lock,fcntl.LOCK_UN)
+print(json.dumps(event,ensure_ascii=False))
+

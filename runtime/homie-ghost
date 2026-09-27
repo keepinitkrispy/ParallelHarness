@@ -1,0 +1,155 @@
+#!/data/data/com.termux/files/usr/bin/python3
+import json, os, pathlib, subprocess, sys, time
+
+HOME = pathlib.Path.home()
+UI = str(HOME / ".local/bin/ghostui")
+GHOST = str(HOME / ".local/bin/ghostctl")
+
+APPS = {
+    "chatgpt": {
+        "package": "com.openai.chatgpt",
+        "component": "com.openai.chatgpt/.MainActivity",
+        "send_desc": "Send Message",
+        "name": "ChatGPT",
+        "workspace_name": "ChatGPT Workspace",
+        "workspace_key": "ghost-chatgpt",
+    },
+    "claude": {
+        "package": "com.anthropic.claude",
+        "component": "com.anthropic.claude/.mainactivity.MainActivity",
+        "send_desc": "Send",
+        "name": "Claude",
+        "workspace_name": "Claude Workspace",
+        "workspace_key": "ghost-claude",
+    },
+}
+
+def app_env(app):
+    env = os.environ.copy()
+    env["GHOST_NAME"] = app["workspace_name"]
+    env["GHOST_KEY"] = app["workspace_key"]
+    return env
+
+def sh(*args, timeout=35, env=None):
+    return subprocess.check_output(list(args), text=True, timeout=timeout, env=env)
+
+def dump(app):
+    return json.loads(sh(UI, "dump", env=app_env(app)))
+
+def visible_texts(app):
+    pkg = app["package"]
+    return [n.get("text", "").strip() for n in dump(app).get("nodes", [])
+            if n.get("package") == pkg and n.get("visible")
+            and n.get("class") == "android.widget.TextView"
+            and n.get("text", "").strip()]
+
+def ensure_workspace(app):
+    env = app_env(app)
+    sh(GHOST, "start", env=env)
+    view = dump(app)
+    if any(n.get("package") == app["package"] and n.get("visible")
+           for n in view.get("nodes", [])):
+        return
+    sh(GHOST, "launch", app["component"], timeout=20, env=env)
+    time.sleep(1)
+    view = dump(app)
+    if not any(n.get("package") == app["package"] and n.get("visible")
+               for n in view.get("nodes", [])):
+        raise RuntimeError(app["name"] + " did not become visible in " + app["workspace_name"])
+
+def ask(which, prompt):
+    app = APPS[which]
+    env = app_env(app)
+    ensure_workspace(app)
+
+    # Silent Cartographer is the canonical conversation. Claude's native app
+    # is a stateless model adapter so stale native-thread history cannot
+    # override or contaminate the room transcript.
+    if which == "claude":
+        view = dump(app)
+        if any(n.get("package")==app["package"] and n.get("visible")
+               and n.get("description")=="New chat" for n in view.get("nodes",[])):
+            subprocess.run([UI,"click","description","New chat",app["package"]],
+                           check=True,stdout=subprocess.DEVNULL,timeout=35,env=env)
+            time.sleep(.8)
+
+    before = set(visible_texts(app))
+    subprocess.run([UI,"set-text","class","android.widget.EditText",
+                    app["package"],prompt],check=True,
+                   stdout=subprocess.DEVNULL,timeout=35,env=env)
+    time.sleep(.6)
+    view = dump(app)
+    editors = [n for n in view.get("nodes",[])
+               if n.get("package")==app["package"] and n.get("visible")
+               and n.get("class")=="android.widget.EditText"]
+    if not editors:
+        raise RuntimeError(f'{app["name"]} composer not found')
+    actual = editors[0].get("text","")
+    pasted = any(n.get("package")==app["package"] and n.get("visible")
+                 and n.get("text")=="Pasted content" for n in view.get("nodes",[]))
+    if not actual.strip() and not pasted:
+        raise RuntimeError(f'{app["name"]} composer stayed empty')
+    subprocess.run([UI,"click","description",app["send_desc"],app["package"]],
+                   check=True,stdout=subprocess.DEVNULL,timeout=35,env=env)
+
+    ignore = {"Reply to Claude…","Claude is AI and can make mistakes.",
+              "Sonnet 5","Medium","Chat","Work","Thinking"}
+    last = None
+    stable = 0
+    answer = ""
+    for _ in range(80):
+        time.sleep(1.2)
+        view = dump(app)
+
+        if which == "claude":
+            writing = any(
+                n.get("package")==app["package"] and n.get("visible")
+                and (
+                    n.get("description") in {"Claude is writing", "Stop responding"}
+                    or n.get("text") == "Stop responding"
+                )
+                for n in view.get("nodes",[])
+            )
+            if writing:
+                continue
+
+            found = []
+            for n in view.get("nodes",[]):
+                if n.get("package") != app["package"] or not n.get("visible"):
+                    continue
+                if n.get("class") != "android.widget.TextView":
+                    continue
+                t = n.get("text","").strip()
+                b = n.get("bounds") or [999,999,999,999]
+                # Claude final-answer blocks are left-aligned around x=40.
+                # Prompt and transient thinking/status rows are inset near x=112.
+                if t and b[0] <= 64 and t not in before and t not in ignore and t != actual and t != prompt:
+                    found.append(t)
+            candidate = "\n\n".join(found) if found else ""
+        else:
+            found = [t for t in visible_texts(app)
+                     if t not in before and t not in ignore
+                     and t != actual and t != prompt]
+            candidate = found[-1] if found else ""
+
+        if candidate:
+            if candidate == last:
+                stable += 1
+            else:
+                stable = 0
+            last = candidate
+            if stable >= 1:
+                answer = candidate
+                break
+
+    if not answer:
+        raise RuntimeError(f'No stable {app["name"]} final reply observed')
+    return {"speaker": app["name"], "text": answer}
+
+if __name__ == "__main__":
+    if len(sys.argv) < 3 or sys.argv[1] not in APPS:
+        raise SystemExit("usage: homie-ghost chatgpt|claude PROMPT")
+    prompt = sys.argv[2]
+    if len(prompt) > 12000:
+        raise SystemExit("prompt too long")
+    print(json.dumps(ask(sys.argv[1], prompt), ensure_ascii=False))

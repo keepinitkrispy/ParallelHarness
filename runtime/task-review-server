@@ -1,0 +1,277 @@
+#!/data/data/com.termux/files/usr/bin/python3
+import fcntl, html, json, os, pathlib, re, signal, subprocess, time
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse
+
+ROOT = pathlib.Path.home()/'.local/state/capability-cartographer/tasks'
+ROOT.mkdir(parents=True, exist_ok=True)
+VALID = re.compile(r'^[0-9a-f]{32}$')
+ACTIVE = {'preparing', 'awaiting_approval', 'running', 'paused'}
+
+def path(token):
+    if not VALID.fullmatch(token): raise ValueError('bad task token')
+    return ROOT/(token+'.json')
+
+@contextmanager
+def state_guard(token):
+    with (ROOT/(token+'.lock')).open('a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        try: yield
+        finally: fcntl.flock(lock,fcntl.LOCK_UN)
+
+def read(token): return json.loads(path(token).read_text())
+def save(token, state):
+    target=path(token); tmp=target.with_suffix('.tmp')
+    tmp.write_text(json.dumps(state,ensure_ascii=False)); os.replace(tmp,target)
+
+def identity(pid):
+    try: return pathlib.Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[19]
+    except (OSError,IndexError): return None
+
+def process_name(pid):
+    if not pid: return 'Not started'
+    try:
+        name=pathlib.Path(f'/proc/{pid}/comm').read_text().strip()
+        return f'{name} (PID {pid})'
+    except OSError:
+        return f'PID {pid}'
+
+WORKSPACES = {
+    'chatgpt': ('ChatGPT Workspace', 'ghost-chatgpt'),
+    'claude': ('Claude Workspace', 'ghost-claude'),
+}
+
+def workspace_snapshot(token,state):
+    workspace=state.get('workspace')
+    if workspace not in WORKSPACES: raise ValueError('task has no visual workspace')
+    name,key=WORKSPACES[workspace]
+    target=ROOT/(token+'.workspace.png')
+    env={**os.environ,'GHOST_NAME':name,'GHOST_KEY':key}
+    subprocess.run(
+        [str(pathlib.Path.home()/'.local/bin/ghostctl'),'shot',str(target)],
+        check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=12,env=env,
+    )
+    return target.read_bytes()
+
+def pause(state):
+    if state['status'] == 'running':
+        pid=state.get('pid')
+        if pid and identity(pid)==state.get('proc_start'):
+            os.killpg(pid,signal.SIGSTOP); state['status']='paused'
+            state['current']='Paused because you opened the task.'
+        else: state['status']='finished'
+    elif state['status']=='preparing':
+        state['pause_requested']=True
+        state['current']='Pause requested; work will stop as it starts.'
+    return state
+
+def resume(state):
+    if state['status']=='paused':
+        pid=state.get('pid')
+        if pid and identity(pid)==state.get('proc_start'):
+            os.killpg(pid,signal.SIGCONT); state['status']='running'
+            state['current']='Approved by Ryan; task resumed.'
+            state['decision']='approve'
+            state.setdefault('events',[]).append(state['current'])
+    elif state['status'] in ('preparing','awaiting_approval'):
+        state['pause_requested']=False
+        state['decision']='approve'
+        state['status']='preparing'
+        state['current']='Approved by Ryan; task may start.'
+        state.setdefault('events',[]).append(state['current'])
+    return state
+
+def stop_process_group(pid, proc_start):
+    if not pid or identity(pid) != proc_start: return
+    try:
+        os.killpg(pid, signal.SIGCONT)
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline=time.monotonic()+1.5
+    while time.monotonic() < deadline:
+        try: os.killpg(pid, 0)
+        except ProcessLookupError: return
+        time.sleep(.05)
+    try: os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError: pass
+
+def stop(state):
+    if state.get('status') in ('completed','failed','denied','stopped'):
+        return state
+    pid=state.get('pid')
+    if state.get('status') in ('running','paused'):
+        stop_process_group(pid, state.get('proc_start'))
+    state['pause_requested']=False
+    state['cancel_requested']=True
+    state['stop_requested']=True
+    state['decision']='stop'
+    state['status']='stopped'
+    state['current']='Stopped by Ryan.'
+    events=state.setdefault('events',[])
+    if not events or events[-1] != state['current']: events.append(state['current'])
+    return state
+
+def deny(state):
+    if state.get('status') not in ('preparing','awaiting_approval'):
+        return state
+    state['pause_requested']=False
+    state['cancel_requested']=True
+    state['decision']='deny'
+    state['status']='denied'
+    state['current']='Denied by Ryan before execution.'
+    events=state.setdefault('events',[])
+    if not events or events[-1] != state['current']: events.append(state['current'])
+    return state
+
+def render(state,token):
+    esc=html.escape
+    status=esc(state.get('status','unknown'))
+    title=esc(state.get('task') or 'Untitled task')
+    purpose=esc(state.get('why') or 'Not provided')
+    current=esc(state.get('current') or 'No update yet')
+    expected=esc(state.get('expected_result') or 'Not specified')
+    agent=esc(state.get('agent') or 'Not specified')
+    workspace=state.get('workspace') or 'system'
+    workspace_label=esc(WORKSPACES.get(workspace,(workspace,''))[0] if workspace in WORKSPACES else 'System / background')
+    proc=esc(process_name(state.get('pid')))
+    history=''.join('<li>'+esc(str(e))+'</li>' for e in state.get('events',[])[-15:])
+    visual=(f'<section class="card"><h2>Paused workspace</h2><p><b>Workspace:</b> {workspace_label}</p>'
+            f'<img src="/workspace/{token}.png" alt="Paused workspace snapshot" '
+            f'style="max-width:100%;height:auto;border:1px solid #ccd3da;border-radius:10px"></section>'
+            if workspace in WORKSPACES else
+            f'<section class="card"><h2>Workspace</h2><p>{workspace_label}; there is no visual display for this task.</p></section>')
+    controls=''
+    if state.get('status') in ACTIVE:
+        controls='<div class="controls">'
+        if state.get('status') in ('running','preparing'):
+            controls += f'<form method="POST" action="/pause/{token}"><button class="pause">Pause task</button></form>'
+        if state.get('status') in ('paused','preparing','awaiting_approval'):
+            label='Resume task' if state.get('status')=='paused' else 'Approve / continue'
+            controls += f'<form method="POST" action="/resume/{token}"><button>{label}</button></form>'
+        if state.get('status') in ('preparing','awaiting_approval'):
+            controls += f'<form method="POST" action="/deny/{token}"><button class="deny">Deny</button></form>'
+        controls += f'<form method="POST" action="/stop/{token}"><button class="stop">Stop task</button></form></div>'
+    return f'''<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Task review · {title}</title><style>
+    body{{font:17px system-ui;margin:20px auto;padding:0 16px;line-height:1.5;max-width:760px;color:#17202a}}
+    h1{{font-size:1.45em;margin-bottom:4px}}h2{{font-size:1.15em}}.status{{font-size:1.1em;font-weight:700}}
+    .card{{border:1px solid #ccd3da;border-radius:12px;padding:14px 16px;margin:16px 0}}
+    .controls{{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0}}.controls form{{margin:0}}
+    button{{font-size:1em;padding:12px 17px;border:0;border-radius:8px;background:#1769aa;color:white;font-weight:650}}
+    .pause{{background:#8a5a00}}.stop{{background:#a32222}}.deny{{background:#5d6470}}
+    a{{color:#075ea8}}small{{color:#54606d}}li{{margin:6px 0}}
+    </style></head><body>
+    <p><a href="/active">← Active tasks</a></p><h1>{title}</h1>
+    <p class="status">Status: {status}</p>
+    <section class="card"><h2>Task identity</h2>
+    <p><b>Task:</b> {title}</p><p><b>Process:</b> {proc}</p><p><b>Agent:</b> {agent}</p></section>
+    <section class="card"><h2>Purpose and intended result</h2>
+    <p><b>Purpose:</b> {purpose}</p><p><b>Expected end/result:</b> {expected}</p></section>
+    <section class="card"><h2>Current status and review details</h2>
+    <p><b>Current step:</b> {current}</p><p><b>Review ID:</b> <small>{token}</small></p></section>
+    {visual}
+    {controls}<h2>Review history</h2><ul>{history or '<li>No updates yet.</li>'}</ul>
+    <p><a href="/view/{token}">Refresh task details</a></p></body></html>'''
+
+def render_active():
+    esc=html.escape
+    items=[]
+    for file in ROOT.glob('*.json'):
+        token=file.stem
+        if not VALID.fullmatch(token): continue
+        try:
+            with state_guard(token): state=read(token)
+        except (OSError,json.JSONDecodeError,ValueError):
+            continue
+        if state.get('status') not in ACTIVE: continue
+        title=esc(state.get('task') or 'Untitled task')
+        status=esc(state.get('status') or 'unknown')
+        current=esc(state.get('current') or 'No update yet')
+        purpose=esc(state.get('why') or 'Not provided')
+        items.append(f'''<article class="card"><h2>{title}</h2>
+        <p><b>Status:</b> {status} · <b>Current:</b> {current}</p>
+        <p><b>Purpose:</b> {purpose}</p>
+        <p><a href="/view/{token}">View details</a> ·
+        <a href="/task/{token}">Open and pause task</a></p></article>''')
+    content=''.join(items) or '<p>No active tasks.</p>'
+    return f'''<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Active task reviews</title><style>
+    body{{font:17px system-ui;margin:20px auto;padding:0 16px;line-height:1.5;max-width:760px;color:#17202a}}
+    h1{{font-size:1.5em}}h2{{font-size:1.1em;margin:0}}.card{{border:1px solid #ccd3da;border-radius:12px;padding:14px 16px;margin:14px 0}}
+    a{{color:#075ea8;font-weight:650}}
+    </style></head><body><h1>Active task reviews</h1>
+    <p>Select a task to inspect it. “Open and pause task” pauses it as the notification click does.</p>
+    {content}<p><a href="/active">Refresh active list</a></p></body></html>'''
+
+class Handler(BaseHTTPRequestHandler):
+    def reply(self, code, body):
+        data=body.encode(); self.send_response(code)
+        self.send_header('Content-Type','text/html; charset=utf-8')
+        self.send_header('Content-Length',str(len(data))); self.end_headers()
+        self.wfile.write(data)
+
+    def reply_bytes(self, code, data, content_type):
+        self.send_response(code)
+        self.send_header('Content-Type',content_type)
+        self.send_header('Cache-Control','no-store')
+        self.send_header('Content-Length',str(len(data))); self.end_headers()
+        self.wfile.write(data)
+
+    def route(self, action):
+        parts=urlparse(self.path).path.strip('/').split('/')
+        if action=='GET' and parts in ([''],['active']):
+            return self.reply(200,render_active())
+        if len(parts)!=2 or parts[0] not in ('task','view','pause','resume','deny','stop'):
+            return self.reply(404,'Unknown task')
+        kind,token=parts
+        try:
+            with state_guard(token):
+                state=read(token)
+                if action=='GET' and kind=='task':
+                    state=pause(state); save(token,state)
+                elif action=='GET' and kind=='view':
+                    pass
+                elif action=='POST' and kind=='pause':
+                    state=pause(state); save(token,state)
+                elif action=='POST' and kind=='resume':
+                    state=resume(state); save(token,state)
+                elif action=='POST' and kind=='deny':
+                    state=deny(state); save(token,state)
+                elif action=='POST' and kind=='stop':
+                    state=stop(state); save(token,state)
+                else:
+                    return self.reply(405,'Method not allowed')
+        except (ValueError,FileNotFoundError,json.JSONDecodeError):
+            return self.reply(404,'Unknown task')
+        return self.reply(200,render(state,token))
+
+    def do_GET(self):
+        if self.path=='/health': return self.reply(200,'task-review-ready')
+        parts=urlparse(self.path).path.strip('/').split('/')
+        if len(parts)==2 and parts[0]=='validate':
+            token=parts[1]
+            try:
+                exists=path(token).is_file()
+            except ValueError:
+                exists=False
+            self.send_response(204 if exists else 404); self.end_headers(); return
+        if len(parts)==2 and parts[0]=='workspace' and parts[1].endswith('.png'):
+            token=parts[1][:-4]
+            try:
+                with state_guard(token): state=read(token)
+                data=workspace_snapshot(token,state)
+                return self.reply_bytes(200,data,'image/png')
+            except Exception:
+                return self.reply(404,'Workspace unavailable')
+        self.route('GET')
+
+    def do_POST(self):
+        length=int(self.headers.get('Content-Length','0'))
+        if length>0: self.rfile.read(length)
+        self.route('POST')
+
+    def log_message(self,*args): pass
+
+ThreadingHTTPServer(('127.0.0.1',49173),Handler).serve_forever()

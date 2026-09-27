@@ -1,0 +1,126 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+export TMPDIR="$HOME/.tmp"
+GHOST_NAME="${GHOST_NAME:-Parallel Ghost}"
+GHOST_KEY="${GHOST_KEY:-ghost}"
+GHOST_DISPLAY_BIN="${GHOST_DISPLAY_BIN:-$HOME/.local/bin/ghost-display-v2}"
+STATE="$HOME/.local/state/$GHOST_KEY"
+mkdir -p "$STATE"
+
+adbdev() {
+  adb devices | awk 'NR>1 && $2=="device"{print $1; exit}'
+}
+
+DEV="$(adbdev)"
+if [ -z "$DEV" ]; then
+  adb start-server >/dev/null
+  sleep 1
+  DEV="$(adbdev)"
+fi
+[ -n "$DEV" ] || { echo "no local adb device" >&2; exit 2; }
+
+logical_id() {
+  adb -s "$DEV" shell dumpsys display | awk -v name="$GHOST_NAME" '
+    /mDisplayId=/ {
+      line=$0
+      sub(/.*mDisplayId=/,"",line)
+      sub(/[^0-9].*/,"",line)
+      id=line
+    }
+    index($0,name) {
+      if (id!="") { print id; exit }
+    }
+  '
+}
+
+surface_id() {
+  adb -s "$DEV" shell dumpsys SurfaceFlinger --display-id | awk -v name="$GHOST_NAME" 'index($0,name) {print $2; exit}'
+}
+
+ensure() {
+  id="$(logical_id || true)"
+  if [ -z "$id" ]; then
+    nohup "$GHOST_DISPLAY_BIN" 720 1280 320 "$GHOST_NAME" >"$STATE/daemon.log" 2>&1 &
+    echo $! > "$STATE/pid"
+    for n in $(seq 1 30); do
+      sleep .2
+      id="$(logical_id || true)"
+      [ -n "$id" ] && break
+    done
+  fi
+  [ -n "$id" ] || { cat "$STATE/daemon.log" >&2 2>/dev/null || true; exit 3; }
+  echo "$id"
+}
+
+op="$1"
+[ -n "$op" ] || op=status
+[ "$#" -gt 0 ] && shift || true
+
+case "$op" in
+  start)
+    id="$(ensure)"
+    echo "display=$id surface=$(surface_id)"
+    ;;
+  status)
+    id="$(logical_id || true)"
+    if [ -n "$id" ]; then
+      echo "running display=$id surface=$(surface_id)"
+    else
+      echo "stopped"
+    fi
+    ;;
+  launch)
+    id="$(ensure)"
+    target="$1"
+    [ -n "$target" ] || { echo "package-or-component required" >&2; exit 4; }
+    if [[ "$target" == */* ]]; then
+      comp="$target"
+    else
+      comp="$(adb -s "$DEV" shell cmd package resolve-activity --brief "$target" | tail -1 | tr -d '\r')"
+    fi
+    [ -n "$comp" ] || { echo "no launch activity for $target" >&2; exit 4; }
+    "$HOME/.local/bin/virtual-app" "$comp"
+    ;;
+  tap)
+    id="$(ensure)"
+    adb -s "$DEV" shell input -d "$id" tap "$1" "$2"
+    ;;
+  swipe)
+    id="$(ensure)"
+    ms="$5"
+    [ -n "$ms" ] || ms=300
+    adb -s "$DEV" shell input -d "$id" swipe "$1" "$2" "$3" "$4" "$ms"
+    ;;
+  text)
+    id="$(ensure)"
+    txt="$*"
+    adb -s "$DEV" shell input -d "$id" text "$(printf '%s' "$txt" | sed 's/ /%s/g')"
+    ;;
+  key)
+    id="$(ensure)"
+    adb -s "$DEV" shell input -d "$id" keyevent "$1"
+    ;;
+  back)
+    id="$(ensure)"
+    adb -s "$DEV" shell input -d "$id" keyevent KEYCODE_BACK
+    ;;
+  shot)
+    ensure >/dev/null
+    sid="$(surface_id)"
+    out="$1"
+    [ -n "$out" ] || out="$STATE/latest.png"
+    adb -s "$DEV" shell screencap -d "$sid" -p /sdcard/.parallel-ghost.png
+    adb -s "$DEV" pull /sdcard/.parallel-ghost.png "$out" >/dev/null
+    echo "$out"
+    ;;
+  stop)
+    if [ -f "$STATE/pid" ]; then
+      kill "$(cat "$STATE/pid")" 2>/dev/null || true
+      rm -f "$STATE/pid"
+    fi
+    ;;
+  *)
+    echo "ghostctl start|status|launch PKG|tap X Y|swipe X1 Y1 X2 Y2 [MS]|text TEXT|key CODE|back|shot [FILE]|stop" >&2
+    exit 64
+    ;;
+esac
