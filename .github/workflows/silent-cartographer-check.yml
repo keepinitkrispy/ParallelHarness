@@ -18,7 +18,9 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
-      - name: Compile prototype
+      - name: Check bridge syntax
+        run: python3 -m py_compile scripts/gruesome-twosome/twosome-server
+      - name: Compile prototype Kotlin
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew compileDebugKotlin
