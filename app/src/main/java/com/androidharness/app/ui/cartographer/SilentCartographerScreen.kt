@@ -335,7 +335,7 @@ private suspend fun postMessage(text: String) = withContext(Dispatchers.IO) {
     val body = ("{\"text\":" + jsonBody + "}")
         .toRequestBody("application/json; charset=utf-8".toMediaType())
     val request = Request.Builder()
-        .url("$ROOM_BASE/send")
+        .url("$ROOM_BASE/user-send")
         .post(body)
         .build()
     roomHttp.newCall(request).execute().use { response ->
