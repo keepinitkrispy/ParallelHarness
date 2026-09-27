@@ -26,6 +26,7 @@ jobs:
           tar -xzf .ci/SilentCartographerBuild-src.tgz -C scbuild
           rm -f scbuild/local.properties
           chmod +x scbuild/gradlew
+          sed -i 's/org.gradle.jvmargs=.*/org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8/' scbuild/gradle.properties
       - name: Build APK
         working-directory: scbuild
         env:
