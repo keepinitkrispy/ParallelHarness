@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -133,7 +134,10 @@ fun SilentCartographerScreen(
     Scaffold(
         containerColor = MaterialTheme.colorScheme.surface,
         topBar = {
-            Surface(color = MaterialTheme.colorScheme.surface) {
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                modifier = Modifier.statusBarsPadding(),
+            ) {
                 Column {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -331,7 +335,7 @@ private suspend fun fetchEvents(): List<RoomEvent> = withContext(Dispatchers.IO)
 }
 
 private suspend fun postMessage(text: String) = withContext(Dispatchers.IO) {
-    val jsonBody = roomJson.encodeToString(JsonPrimitive.serializer(), JsonPrimitive(text))
+    val jsonBody = JsonPrimitive(text).toString()
     val body = ("{\"text\":" + jsonBody + "}")
         .toRequestBody("application/json; charset=utf-8".toMediaType())
     val request = Request.Builder()
