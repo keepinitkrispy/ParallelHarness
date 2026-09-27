@@ -147,7 +147,7 @@ class MainActivity : FragmentActivity() {
                             )
                             Spacer(Modifier.height(16.dp))
                             Text(
-                                "AndroidHarness is Locked",
+                                "Silent Cartographer is Locked",
                                 style = MaterialTheme.typography.titleLarge,
                                 textAlign = TextAlign.Center,
                             )
@@ -246,7 +246,7 @@ class MainActivity : FragmentActivity() {
         promptShownThisResume = true
         BiometricAuth.prompt(
             activity = this,
-            title = "Unlock AndroidHarness",
+            title = "Unlock Silent Cartographer",
             subtitle = "Confirm your fingerprint, face, or PIN",
             onSuccess = { isUnlocked = true },
             onError = {
