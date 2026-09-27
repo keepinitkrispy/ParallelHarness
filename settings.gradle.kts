@@ -13,3 +13,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "AndroidHarness"
 include(":app")
+include(":silentcartographer")
