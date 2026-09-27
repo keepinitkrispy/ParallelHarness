@@ -28,7 +28,7 @@ jobs:
           chmod +x scbuild/gradlew
           sed -i 's/org.gradle.jvmargs=.*/org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8/' scbuild/gradle.properties
           sed -i 's/composeBom = "2026.08.00"/composeBom = "2026.04.01"/' scbuild/gradle/libs.versions.toml
-          sed -i 's/material3 = "1.5.0-alpha26"/material3 = "1.5.0-alpha23"/' scbuild/gradle/libs.versions.toml
+          sed -i 's/material3 = "1.5.0-alpha26"/material3 = "1.5.0-alpha19"/' scbuild/gradle/libs.versions.toml
       - name: Build APK
         working-directory: scbuild
         env:
