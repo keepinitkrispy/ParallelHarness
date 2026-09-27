@@ -18,12 +18,21 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK 37
+        run: sdkmanager "platforms;android-37" "build-tools;36.0.0"
       - uses: gradle/actions/setup-gradle@v4
+      - name: Verify standalone target
+        run: |
+          test -f silentcartographer/src/main/AndroidManifest.xml
+          grep -q 'compileSdk = 37' silentcartographer/build.gradle.kts
+          grep -q 'versionName = "0.3.0"' silentcartographer/build.gradle.kts
       - name: Build standalone APK
         run: |
           chmod +x gradlew
-          ./gradlew :silentcartographer:assembleDebug
+          ./gradlew :silentcartographer:assembleDebug --stacktrace
       - uses: actions/upload-artifact@v4
         with:
-          name: Silent-Cartographer-standalone
+          name: Silent-Cartographer-0.3.0
           path: silentcartographer/build/outputs/apk/debug/silentcartographer-debug.apk
+          if-no-files-found: error

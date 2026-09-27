@@ -11,6 +11,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "AndroidHarness"
-include(":app")
+rootProject.name = "SilentCartographer"
 include(":silentcartographer")

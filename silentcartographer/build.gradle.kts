@@ -4,6 +4,8 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+val stableDebugKey = rootProject.file("signing-keys/debug.keystore")
+
 android {
     namespace = "dev.keepinitkrispy.silentcartographer"
     compileSdk = 37
@@ -12,8 +14,27 @@ android {
         applicationId = "dev.keepinitkrispy.silentcartographer"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 3
+        versionName = "0.3.0"
+    }
+
+    signingConfigs {
+        if (stableDebugKey.exists()) {
+            create("stableDebug") {
+                storeFile = stableDebugKey
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
+    }
+
+    buildTypes {
+        getByName("debug") {
+            if (stableDebugKey.exists()) {
+                signingConfig = signingConfigs.getByName("stableDebug")
+            }
+        }
     }
 
     compileOptions {

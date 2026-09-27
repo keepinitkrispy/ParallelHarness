@@ -1,7 +1,11 @@
 package dev.keepinitkrispy.silentcartographer
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.LocalSocket
 import android.net.LocalSocketAddress
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -37,6 +41,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
@@ -49,6 +54,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -60,15 +66,26 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 private const val ROOM_BASE = "http://127.0.0.1:49174"
 
 private data class RoomEvent(
     val id: String,
+    val time: Long,
     val speaker: String,
     val text: String,
     val status: String,
+    val source: String,
+    val authenticated: Boolean,
+)
+
+private data class RuntimeHealth(
+    val taskControl: Boolean,
+    val agentsReady: Boolean,
 )
 
 private val roomHttp = OkHttpClient.Builder()
@@ -80,6 +97,11 @@ private val roomHttp = OkHttpClient.Builder()
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 3001)
+        }
         enableEdgeToEdge()
         setContent {
             MaterialTheme(
@@ -93,12 +115,14 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun SilentCartographerApp() {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val events = remember { mutableStateListOf<RoomEvent>() }
     val listState = rememberLazyListState()
     var draft by remember { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
     var connected by remember { mutableStateOf(false) }
+    var health by remember { mutableStateOf(RuntimeHealth(false, false)) }
     var error by remember { mutableStateOf<String?>(null) }
 
     suspend fun refresh() {
@@ -115,6 +139,8 @@ private fun SilentCartographerApp() {
                 connected = false
                 error = it.message ?: "Bridge unavailable"
             }
+        health = runCatching { fetchHealth() }
+            .getOrElse { RuntimeHealth(false, false) }
     }
 
     LaunchedEffect(Unit) {
@@ -159,20 +185,18 @@ private fun SilentCartographerApp() {
                         )
                     }
 
-                    Surface(
-                        shape = RoundedCornerShape(999.dp),
-                        color = if (connected) {
-                            MaterialTheme.colorScheme.primaryContainer
-                        } else {
-                            MaterialTheme.colorScheme.errorContainer
+                    TextButton(
+                        onClick = {
+                            context.startActivity(Intent(context, TaskReviewActivity::class.java))
                         },
                     ) {
-                        Text(
-                            if (connected) "LIVE" else "OFFLINE",
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                        )
+                        Text("TASKS", fontWeight = FontWeight.Bold)
+                    }
+
+                    Column(horizontalAlignment = Alignment.End) {
+                        StatusText("ROOM", connected)
+                        StatusText("TASKS", health.taskControl)
+                        StatusText("AGENTS", health.agentsReady)
                     }
                 }
             }
@@ -280,6 +304,20 @@ private fun SilentCartographerApp() {
 }
 
 @Composable
+private fun StatusText(label: String, healthy: Boolean) {
+    Text(
+        "$label " + if (healthy) "●" else "○",
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.Bold,
+        color = if (healthy) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            MaterialTheme.colorScheme.error
+        },
+    )
+}
+
+@Composable
 private fun RoomBubble(event: RoomEvent) {
     val mine = event.speaker == "Ryan"
     val scheme = MaterialTheme.colorScheme
@@ -327,6 +365,21 @@ private fun RoomBubble(event: RoomEvent) {
                         )
                     }
                 }
+                val stamp = remember(event.time) {
+                    SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(event.time))
+                }
+                val provenance = when {
+                    event.speaker == "Ryan" && event.authenticated -> "verified Android UI"
+                    event.source == "assistant_bridge" -> "assistant bridge"
+                    event.source == "test_or_bridge" || event.status == "synthetic" -> "synthetic/test"
+                    event.source.isNotBlank() -> event.source
+                    else -> "unattributed"
+                }
+                Text(
+                    "$stamp · $provenance",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = content.copy(alpha = 0.62f),
+                )
                 Spacer(Modifier.height(4.dp))
                 Text(event.text, style = MaterialTheme.typography.bodyLarge)
             }
@@ -349,13 +402,28 @@ private suspend fun fetchEvents(): List<RoomEvent> = withContext(Dispatchers.IO)
                 add(
                     RoomEvent(
                         id = id,
+                        time = item.optLong("time", 0L),
                         speaker = item.optString("speaker", "Unknown"),
                         text = item.optString("text"),
                         status = item.optString("status", "observed"),
+                        source = item.optString("source", ""),
+                        authenticated = item.optJSONObject("auth") != null,
                     )
                 )
             }
         }
+    }
+}
+
+private suspend fun fetchHealth(): RuntimeHealth = withContext(Dispatchers.IO) {
+    val request = Request.Builder().url(ROOM_BASE + "/health").get().build()
+    roomHttp.newCall(request).execute().use { response ->
+        if (!response.isSuccessful) error("Health returned " + response.code)
+        val root = JSONObject(response.body?.string().orEmpty())
+        RuntimeHealth(
+            taskControl = root.optBoolean("task_control", false),
+            agentsReady = root.optBoolean("agents_ready", false),
+        )
     }
 }
 
