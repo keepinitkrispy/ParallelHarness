@@ -1,0 +1,12 @@
+#!/data/data/com.termux/files/usr/bin/sh
+set -eu
+ADB=/data/data/com.termux/files/usr/bin/adb
+DEV=127.0.0.1:5555
+DEX=/data/data/com.termux/files/home/.local/libexec/ghost-ui/daemon-dex/classes.dex
+REMOTE=/data/local/tmp/ghost-ui-daemon.dex
+while ! "$ADB" -s "$DEV" get-state >/dev/null 2>&1; do
+  "$ADB" connect "$DEV" >/dev/null 2>&1 || true
+  sleep 1
+done
+"$ADB" -s "$DEV" push "$DEX" "$REMOTE" >/dev/null
+exec "$ADB" -s "$DEV" shell "CLASSPATH=$REMOTE app_process /system/bin GhostUIDaemon 49210"
