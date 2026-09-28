@@ -9,7 +9,8 @@ EVENTS = STATE / "events.jsonl"
 BRIDGE = str(HOME / ".local/bin/homie-ghost")
 TRUSTED_UI_PACKAGE = "dev.keepinitkrispy.silentcartographer"
 UI_SOCKET = "\0silent_cartographer_ui_v1"
-LOCAL_MODEL = "http://127.0.0.1:18080/v1"
+# Direct backend tunnel: /models on 18080 auto-starts the rented GPU.
+LOCAL_MODEL = "http://127.0.0.1:18081/v1"
 MODEL_IDS = ("chatgpt", "claude", "local")
 CONTROL = STATE / "control.json"
 LOCK = threading.Lock()
