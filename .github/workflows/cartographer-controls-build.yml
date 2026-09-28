@@ -3,6 +3,13 @@ on:
   push:
     branches:
       - silent-cartographer-controls-models
+  pull_request:
+    branches:
+      - silent-cartographer-controls-models
+    paths:
+      - 'runtime/cartographer-room/**'
+      - 'silentcartographer/**'
+      - '.github/workflows/cartographer-controls-build.yml'
   workflow_dispatch:
 permissions:
   contents: read
@@ -16,6 +23,10 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
+      - name: Test Silent Cartographer room behavior
+        run: |
+          python3 -m py_compile runtime/cartographer-room/twosome-server.py runtime/cartographer-room/test_room_models.py
+          python3 -m unittest runtime/cartographer-room/test_room_models.py -v
       - run: |
           chmod +x gradlew
           ./gradlew :silentcartographer:assembleDebug --stacktrace
