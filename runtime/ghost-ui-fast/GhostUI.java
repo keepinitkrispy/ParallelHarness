@@ -24,22 +24,40 @@ public class GhostUI {
    String d=s(n.getContentDescription());
    for(String v:vals)if(v.equalsIgnoreCase(d)&&clickNode(n))return true;
   }
-  for(int i=0;i<n.getChildCount();i++)if(clickDesc(n.getChild(i),pkg,vals,depth+1))return true;
+  for(int i=0;i<n.getChildCount();i++){
+   AccessibilityNodeInfo c=n.getChild(i);if(c==null)continue;
+   boolean hit=false;try{hit=clickDesc(c,pkg,vals,depth+1);}finally{c.recycle();}
+   if(hit)return true;
+  }
   return false;
  }
  static boolean clickFirstDescription(String pkg,String... vals){
-  for(AccessibilityWindowInfo w:windows())if(clickDesc(w.getRoot(),pkg,vals,0))return true;
+  for(AccessibilityWindowInfo w:windows()){
+   AccessibilityNodeInfo r=w.getRoot();if(r==null)continue;
+   boolean hit=false;try{hit=clickDesc(r,pkg,vals,0);}finally{r.recycle();}
+   if(hit)return true;
+  }
   return false;
  }
- static AccessibilityNodeInfo editable(AccessibilityNodeInfo n,String pkg,int depth){
-  if(n==null||depth>70)return null;
-  if(n.isVisibleToUser()&&n.isEnabled()&&n.isEditable()&&pkg.equals(s(n.getPackageName())))return n;
-  for(int i=0;i<n.getChildCount();i++){AccessibilityNodeInfo x=editable(n.getChild(i),pkg,depth+1);if(x!=null)return x;}
-  return null;
+ static boolean setEditable(AccessibilityNodeInfo n,String pkg,String prompt,int depth){
+  if(n==null||depth>70)return false;
+  if(n.isVisibleToUser()&&n.isEnabled()&&n.isEditable()&&pkg.equals(s(n.getPackageName()))){
+   Bundle b=new Bundle();b.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,prompt);
+   return n.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT,b);
+  }
+  for(int i=0;i<n.getChildCount();i++){
+   AccessibilityNodeInfo c=n.getChild(i);if(c==null)continue;
+   boolean hit=false;try{hit=setEditable(c,pkg,prompt,depth+1);}finally{c.recycle();}
+   if(hit)return true;
+  }
+  return false;
  }
- static AccessibilityNodeInfo firstEditable(String pkg){
-  for(AccessibilityWindowInfo w:windows()){AccessibilityNodeInfo x=editable(w.getRoot(),pkg,0);if(x!=null)return x;}
-  throw new IllegalStateException("No editable field for "+pkg);
+ static boolean setFirstEditable(String pkg,String prompt){
+  for(AccessibilityWindowInfo w:windows()){
+   AccessibilityNodeInfo r=w.getRoot();if(r==null)continue;
+   try{if(setEditable(r,pkg,prompt,0))return true;}finally{r.recycle();}
+  }
+  return false;
  }
  static void collectReply(AccessibilityNodeInfo n,String pkg,String prompt,LinkedHashSet<String> out,int depth){
   if(n==null||depth>70||out.size()>250)return;
@@ -51,11 +69,17 @@ public class GhostUI {
     if(r.left<=140&&!lo.equals("working")&&!lo.equals("thinking")&&!lo.equals("show more")&&!lo.equals("retry")&&!lo.equals("copy")&&!lo.equals("good response")&&!lo.equals("bad response"))out.add(t);
    }
   }
-  for(int i=0;i<n.getChildCount();i++)collectReply(n.getChild(i),pkg,prompt,out,depth+1);
+  for(int i=0;i<n.getChildCount();i++){
+   AccessibilityNodeInfo c=n.getChild(i);if(c==null)continue;
+   try{collectReply(c,pkg,prompt,out,depth+1);}finally{c.recycle();}
+  }
  }
  static String visibleReply(String pkg,String prompt){
   LinkedHashSet<String> out=new LinkedHashSet<>();
-  for(AccessibilityWindowInfo w:windows())collectReply(w.getRoot(),pkg,prompt,out,0);
+  for(AccessibilityWindowInfo w:windows()){
+   AccessibilityNodeInfo r=w.getRoot();if(r==null)continue;
+   try{collectReply(r,pkg,prompt,out,0);}finally{r.recycle();}
+  }
   return String.join("\n",out).trim();
  }
  public static void main(String[] args)throws Exception{
@@ -72,9 +96,7 @@ public class GhostUI {
    if(!op.equals("ask"))throw new IllegalArgumentException("Unknown operation");
    String pkg=args[2],prompt=args[3];
    clickFirstDescription(pkg,"New chat","Start new chat");Thread.sleep(200);
-   AccessibilityNodeInfo edit=firstEditable(pkg);
-   Bundle b=new Bundle();b.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,prompt);
-   if(!edit.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT,b))throw new IllegalStateException("set text rejected");
+   if(!setFirstEditable(pkg,prompt))throw new IllegalStateException("set text rejected");
    Thread.sleep(120);
    if(!clickFirstDescription(pkg,"Send","Send message","Submit"))throw new IllegalStateException("Send control not found");
    String last="",candidate="";long changed=System.currentTimeMillis(),deadline=changed+120000;
