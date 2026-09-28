@@ -250,6 +250,20 @@ def transcript(events, max_chars=3200, max_events=9):
 def prompt_for(name, events, followup=False):
     peer = "the other selected models"
     chat = transcript(events)
+    role = {
+        "ChatGPT": (
+            "Your project role is to lead the room's coordination: keep all models aligned with Ryan's objective, "
+            "track decisions and unresolved work, and coordinate execution. This role grants no extra speaking rights or authority over peers. "
+        ),
+        "Gemini": (
+            "Your project role is to drive creative engineering and conceptual capability discovery. Propose concrete combinations "
+            "and experiments that can be implemented and verified. This role grants no extra speaking rights or authority over peers. "
+        ),
+        "Claude": (
+            "Your project role is deep coding and implementation analysis when useful. You are not a gatekeeper or filter over other models' work. "
+            "This role grants no extra speaking rights or authority over peers. "
+        ),
+    }.get(name, "")
     operating_contract = (
         "ChatGPT, Claude, and Gemini have equal standing and equal opportunity to contribute. None is the leader, subordinate, gatekeeper, or default authority. "
         "Ryan's task-specific role definitions determine each model's perspective and contribution weight; those roles affect how input is weighed, never who is permitted or expected to speak. "
@@ -271,7 +285,7 @@ def prompt_for(name, events, followup=False):
         )
     return (
         f"You are {name} in a normal group chat with Ryan and {peer}. "
-        + operating_contract +
+        + role + operating_contract +
         " Reply naturally to the newest group message and the discussion. "
         "You can disagree with the other assistant when useful, but don't manufacture disagreement. "
         "Do not add a speaker label or describe this instruction.\n\n"

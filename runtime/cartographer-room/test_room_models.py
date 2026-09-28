@@ -47,10 +47,16 @@ class RoomModelsTest(unittest.TestCase):
         self.assertIn("bridge offline", error["text"])
 
     def test_all_models_receive_equal_standing_and_role_weighting_contract(self):
-        for name in ("ChatGPT", "Claude", "Gemini"):
+        roles = {
+            "ChatGPT": "lead the room's coordination",
+            "Claude": "deep coding and implementation analysis",
+            "Gemini": "drive creative engineering and conceptual capability discovery",
+        }
+        for name, role in roles.items():
             prompt = room.prompt_for(name, [{"kind": "message", "speaker": "Ryan", "text": "go"}])
             self.assertIn("equal standing and equal opportunity", prompt)
             self.assertIn("task-specific role definitions", prompt)
+            self.assertIn(role, prompt)
             self.assertNotIn("second model", prompt)
 
 
