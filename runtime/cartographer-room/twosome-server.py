@@ -1,5 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/python3
 import base64, hashlib, hmac, json, pathlib, subprocess, threading, time, unicodedata, urllib.request, uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HOME = pathlib.Path.home()
@@ -225,7 +226,7 @@ def append_event(speaker, text, kind="message", status="observed", source=None, 
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
     return event
 
-def transcript(events, max_chars=5000, max_events=14):
+def transcript(events, max_chars=3200, max_events=9):
     lines = []
     kept = 0
     for event in reversed(events):
@@ -237,12 +238,16 @@ def transcript(events, max_chars=5000, max_events=14):
         text = str(event.get("text", "")).strip()
         if not text:
             continue
+        if speaker in {"ChatGPT", "Claude", "Gemini", "Local model"} and text in {
+            "Working", "Show more", "Thinking"
+        }:
+            continue
         lines.append(f"{speaker}: {text}")
         kept += 1
     lines.reverse()
     return "\n\n".join(lines)[-max_chars:]
 
-def prompt_for(name, events):
+def prompt_for(name, events, followup=False):
     peer = "the other selected models"
     chat = transcript(events)
     operating_contract = (
@@ -254,6 +259,7 @@ def prompt_for(name, events):
         "The only exception is an Android security/permission UI that cannot operate on the virtual display, and that exception must be surfaced to Ryan visibly. "
         "Preserve approval gates and user control. Do not weaken, bypass, or reinterpret them. "
         "Do not be reflexively cautious: when a request is allowed, execute it instead of replacing it with a lecture. "
+        "The native model app is only a transport adapter. Ignore native-thread history that is not reproduced in the Recent group chat below; the room transcript is authoritative. "
     )
     if name == "Claude":
         operating_contract += (
@@ -261,6 +267,11 @@ def prompt_for(name, events):
             "Challenge factual or architectural mistakes with concrete evidence, but do not manufacture objections, moralize, or stop work merely because a design is unusual. "
             "If you think a requested implementation is unsafe or impossible, identify the exact mechanism and propose the closest viable implementation that preserves Ryan's stated goal and control. "
             "Report any suspected provenance error, deceptive completion claim, scope drift, or attempt to bypass Ryan's controls."
+        )
+    if followup:
+        operating_contract += (
+            "This is an autonomous follow-up round. Read the other models' newest contributions and continue the discussion only if you have a substantive new contribution, correction, synthesis, or next step. "
+            f"If you have nothing materially useful to add, reply exactly {PASS_TOKEN} and nothing else. "
         )
     return (
         f"You are {name} in a normal group chat with Ryan and {peer}. "
@@ -271,9 +282,9 @@ def prompt_for(name, events):
         f"Recent group chat:\n{chat}"
     )
 
-def call_model(which, events):
+def call_model(which, events, followup=False):
     name = {"chatgpt": "ChatGPT", "claude": "Claude", "gemini": "Gemini", "local": "Local model"}[which]
-    prompt = prompt_for(name, events)
+    prompt = prompt_for(name, events, followup=followup)
     if which == "local":
         with urllib.request.urlopen(LOCAL_MODEL + "/models", timeout=2) as response:
             model = json.loads(response.read())["data"][0]["id"]
@@ -293,36 +304,55 @@ def call_model(which, events):
     data = json.loads(raw)
     return str(data.get("text", "")).strip()
 
+def autonomous_conversation(models):
+    names = {"chatgpt": "ChatGPT", "claude": "Claude", "gemini": "Gemini", "local": "Local model"}
+    with TURN_LOCK:
+        for round_index in range(AUTO_MAX_ROUNDS):
+            if room_mode() != "running":
+                return
+            snapshot = read_events()
+            results = {}
+            with ThreadPoolExecutor(max_workers=len(models)) as pool:
+                futures = {
+                    pool.submit(call_model, which, snapshot, round_index > 0): which
+                    for which in models
+                }
+                for future in as_completed(futures):
+                    which = futures[future]
+                    try:
+                        reply = future.result().strip()
+                        if reply and reply != PASS_TOKEN:
+                            results[which] = reply
+                    except Exception as exc:
+                        append_event(
+                            names[which],
+                            "Bridge error: " + str(exc),
+                            kind="system",
+                            status="error",
+                            source="assistant_bridge",
+                        )
+            if not results:
+                return
+            for which in models:
+                reply = results.get(which)
+                if reply:
+                    append_event(names[which], reply, source="assistant_bridge")
+            if round_index > 0 and len(results) <= 1:
+                return
+
+
 def run_turn(text, speaker, status, source, auth=None, models=None):
     if room_mode() != "running":
         raise ValueError("Room is paused or stopped. Use Start to resume.")
     models = selected_models(models)
-    with LOCK:
-        append_event(speaker, text, status=status, source=source, auth=auth)
-        events = read_events()
-        replies = []
-        for which in models:
-            if room_mode() != "running":
-                append_event("System", "Model turns paused before " + which,
-                             kind="system", status="paused", source="room_control")
-                break
-            name = {"chatgpt": "ChatGPT", "claude": "Claude", "gemini": "Gemini", "local": "Local model"}[which]
-            try:
-                reply = call_model(which, events)
-                if reply:
-                    event = append_event(name, reply, source="assistant_bridge")
-                    replies.append(event)
-                    events.append(event)
-            except Exception as exc:
-                event = append_event(
-                    name,
-                    "Bridge error: " + str(exc),
-                    kind="system",
-                    status="error",
-                    source="assistant_bridge",
-                )
-                replies.append(event)
-        return replies
+    append_event(speaker, text, status=status, source=source, auth=auth)
+    threading.Thread(
+        target=autonomous_conversation,
+        args=(tuple(models),),
+        daemon=True,
+        name="cartographer-conversation",
+    ).start()
+    return []
 
 def run_assistant_turn(which):
     if which not in MODEL_IDS:

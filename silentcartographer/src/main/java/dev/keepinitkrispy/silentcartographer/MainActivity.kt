@@ -152,8 +152,9 @@ private fun SilentCartographerApp() {
     val availableModels = remember { mutableStateListOf<ModelChoice>() }
     val selectedModels = remember {
         mutableStateListOf<String>().also { list ->
-            val saved = context.getSharedPreferences("room", 0).getString("models", "chatgpt,claude").orEmpty()
-            list.addAll(saved.split(",").filter { it.isNotBlank() }.take(3))
+            val saved = context.getSharedPreferences("room", 0).getString("models", "chatgpt,claude,gemini").orEmpty()
+            val migrated = if (saved == "chatgpt,claude") "chatgpt,claude,gemini" else saved
+            list.addAll(migrated.split(",").filter { it.isNotBlank() }.take(3))
         }
     }
 
