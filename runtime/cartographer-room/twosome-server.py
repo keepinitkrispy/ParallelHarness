@@ -1,5 +1,5 @@
 #!/data/data/com.termux/files/usr/bin/python3
-import json, pathlib, socket, socketserver, struct, subprocess, threading, time, unicodedata, urllib.request, uuid
+import base64, hashlib, json, pathlib, subprocess, tempfile, threading, time, unicodedata, urllib.request, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HOME = pathlib.Path.home()
@@ -8,7 +8,9 @@ STATE.mkdir(parents=True, exist_ok=True)
 EVENTS = STATE / "events.jsonl"
 BRIDGE = str(HOME / ".local/bin/homie-ghost")
 TRUSTED_UI_PACKAGE = "dev.keepinitkrispy.silentcartographer"
-UI_SOCKET = "\0silent_cartographer_ui_v1"
+AUTH_PUBKEY = STATE / "android-ui-auth-public.pem"
+AUTH_LOCK = threading.Lock()
+SEEN_AUTH_NONCES = {}
 # Direct backend tunnel: /models on 18080 auto-starts the rented GPU.
 LOCAL_MODEL = "http://127.0.0.1:18081/v1"
 MODEL_IDS = ("chatgpt", "claude", "local")
@@ -77,6 +79,51 @@ def selected_models(raw):
     ) or len(set(raw)) != len(raw):
         raise ValueError("select one to three distinct available models")
     return raw
+
+
+def verify_ui_request(body, purpose, detail):
+    if not AUTH_PUBKEY.is_file():
+        raise PermissionError("Android UI auth key is not provisioned")
+    ts = int(body.get("ts", 0))
+    nonce = str(body.get("nonce", ""))
+    sig_b64 = str(body.get("sig", ""))
+    now = int(time.time())
+    if abs(now - ts) > 90:
+        raise PermissionError("stale authenticated request")
+    if not 16 <= len(nonce) <= 96:
+        raise PermissionError("invalid auth nonce")
+    try:
+        signature = base64.b64decode(sig_b64, validate=True)
+    except Exception as exc:
+        raise PermissionError("invalid auth signature encoding") from exc
+    if not 128 <= len(signature) <= 1024:
+        raise PermissionError("invalid auth signature size")
+    canonical = f"sc-auth-v1\n{purpose}\n{ts}\n{nonce}\n{detail}".encode()
+    with tempfile.NamedTemporaryFile(dir=STATE) as msg, tempfile.NamedTemporaryFile(dir=STATE) as sig:
+        msg.write(canonical)
+        msg.flush()
+        sig.write(signature)
+        sig.flush()
+        result = subprocess.run(
+            ["openssl", "dgst", "-sha256", "-verify", str(AUTH_PUBKEY),
+             "-signature", sig.name, msg.name],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+        )
+    if result.returncode != 0:
+        raise PermissionError("Android UI signature verification failed")
+    with AUTH_LOCK:
+        cutoff = now - 180
+        for old_nonce, seen_at in list(SEEN_AUTH_NONCES.items()):
+            if seen_at < cutoff:
+                SEEN_AUTH_NONCES.pop(old_nonce, None)
+        if nonce in SEEN_AUTH_NONCES:
+            raise PermissionError("replayed authenticated request")
+        SEEN_AUTH_NONCES[nonce] = now
+    return {
+        "mechanism": "android_keystore_rsa_sha256",
+        "package": TRUSTED_UI_PACKAGE,
+    }
+
 
 def read_events():
     if not EVENTS.exists():
@@ -281,8 +328,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, {
                 "ok": True,
                 "service": "silent-cartographer",
-                "contract_version": "2026-09-27.5",
-                "ryan_input_auth": "android_uid_over_abstract_unix_socket",
+                "contract_version": "2026-09-28.1",
+                "ryan_input_auth": "android_keystore_signature_over_loopback",
                 "synthetic_posts": "http_/send_only",
                 **runtime_health(),
                 "mode": room_mode(),
@@ -308,10 +355,22 @@ class Handler(BaseHTTPRequestHandler):
                 )
 
             body, text = self.body_text()
-            if self.path == "/user-send":
+            if self.path == "/ui/send":
+                models = selected_models(body.get("models"))
+                detail = ",".join(models) + "\n" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+                auth = verify_ui_request(body, "send", detail)
+                replies = run_turn(
+                    text,
+                    "Ryan",
+                    "observed",
+                    "silent_cartographer_ui",
+                    auth=auth,
+                    models=models,
+                )
+            elif self.path == "/user-send":
                 return self.send_json(
                     403,
-                    {"error": "Ryan attribution requires the authenticated Android UI socket"},
+                    {"error": "Ryan attribution requires an authenticated Android UI signature"},
                 )
             elif self.path == "/send":
                 requested = str(body.get("speaker", "Test harness")).strip() or "Test harness"
@@ -332,6 +391,8 @@ class Handler(BaseHTTPRequestHandler):
                 200,
                 {"ok": True, "replies": replies, "events": read_events()[-50:]},
             )
+        except PermissionError as exc:
+            return self.send_json(403, {"error": str(exc)})
         except ValueError as exc:
             return self.send_json(400, {"error": str(exc)})
         except Exception as exc:
@@ -340,70 +401,6 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-def trusted_ui_uid():
-    output = subprocess.check_output(
-        ["cmd", "package", "list", "packages", "-U", "--user", "0"],
-        text=True,
-        timeout=5,
-        stderr=subprocess.DEVNULL,
-    )
-    prefix = "package:" + TRUSTED_UI_PACKAGE + " uid:"
-    for line in output.splitlines():
-        if line.startswith(prefix):
-            return int(line[len(prefix):].strip())
-    raise RuntimeError("trusted Android UI package is not installed")
-
-
-class UIHandler(socketserver.StreamRequestHandler):
-    def send_result(self, result):
-        self.wfile.write(json.dumps(result, ensure_ascii=False).encode("utf-8") + b"\n")
-        self.wfile.flush()
-
-    def handle(self):
-        pid, uid, gid = struct.unpack(
-            "3i",
-            self.request.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")),
-        )
-        try:
-            expected_uid = trusted_ui_uid()
-        except Exception:
-            self.send_result({"ok": False, "code": 503, "error": "cannot verify Android UI package UID"})
-            return
-        if uid != expected_uid:
-            self.send_result({"ok": False, "code": 403, "error": "unauthorized local caller"})
-            return
-        raw = self.rfile.readline(200001)
-        if not raw or len(raw) > 200000:
-            self.send_result({"ok": False, "code": 400, "error": "bad request"})
-            return
-        try:
-            body = json.loads(raw.decode("utf-8"))
-            text = str(body.get("text", "")).strip()
-            if not text:
-                raise ValueError("empty message")
-        except Exception as exc:
-            self.send_result({"ok": False, "code": 400, "error": str(exc)})
-            return
-        try:
-            replies = run_turn(
-                text,
-                "Ryan",
-                "observed",
-                "silent_cartographer_ui",
-                auth={"mechanism": "SO_PEERCRED", "uid": uid, "pid": pid, "package": TRUSTED_UI_PACKAGE},
-                models=selected_models(body.get("models")),
-            )
-            self.send_result({"ok": True, "code": 200, "replies": replies})
-        except Exception as exc:
-            self.send_result({"ok": False, "code": 500, "error": str(exc)})
-
-
-class UIUnixServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
-    daemon_threads = True
-
-
 if __name__ == "__main__":
     repair_legacy_provenance()
-    ui_server = UIUnixServer(UI_SOCKET, UIHandler)
-    threading.Thread(target=ui_server.serve_forever, daemon=True).start()
     ThreadingHTTPServer(("127.0.0.1", 49174), Handler).serve_forever()

@@ -2,11 +2,13 @@ package dev.keepinitkrispy.silentcartographer
 
 import android.Manifest
 import android.content.Intent
+import android.content.Context
 import android.content.pm.PackageManager
-import android.net.LocalSocket
-import android.net.LocalSocketAddress
 import android.os.Build
 import android.os.Bundle
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import android.util.Base64
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -70,14 +72,26 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.security.KeyPairGenerator
+import java.security.KeyStore
+import java.security.MessageDigest
+import java.security.SecureRandom
+import java.security.Signature
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 private const val ROOM_BASE = "http://127.0.0.1:49174"
-private const val CONTROL_SOCKET = "silent_cartographer_control_v1"
+private const val CONTROL_HOST = "127.0.0.1"
+private const val CONTROL_PORT = 49177
+private const val AUTH_ALIAS = "silent_cartographer_ui_auth_v1"
+private const val AUTH_PUBLIC_FILE = "silent-cartographer-auth-public.der.b64"
 
 private data class ModelChoice(val id: String, val name: String, val ready: Boolean)
 
@@ -110,6 +124,7 @@ class MainActivity : ComponentActivity() {
         ) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 3001)
         }
+        ensureAuthKey(this)
         enableEdgeToEdge()
         setContent {
             MaterialTheme(
@@ -176,7 +191,7 @@ private fun SilentCartographerApp() {
     fun control(action: String) {
         menuExpanded = false
         scope.launch {
-            runCatching { sendControl(action) }
+            runCatching { sendControl(context, action) }
                 .onSuccess { refresh() }
                 .onFailure { error = it.message ?: "Control unavailable" }
         }
@@ -314,7 +329,7 @@ private fun SilentCartographerApp() {
                                     sending = true
                                     error = null
                                     scope.launch {
-                                        runCatching { postMessage(text, selectedModels.toList()) }
+                                        runCatching { postMessage(context, text, selectedModels.toList()) }
                                             .onSuccess {
                                                 draft = ""
                                                 refresh()
@@ -526,38 +541,98 @@ private suspend fun fetchModels(): List<ModelChoice> = withContext(Dispatchers.I
     }
 }
 
-private suspend fun sendControl(action: String) = withContext(Dispatchers.IO) {
-    LocalSocket().use { socket ->
-        socket.connect(LocalSocketAddress(CONTROL_SOCKET, LocalSocketAddress.Namespace.ABSTRACT))
+private fun ensureAuthKey(context: Context) {
+    val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+    if (!store.containsAlias(AUTH_ALIAS)) {
+        val generator = KeyPairGenerator.getInstance(
+            KeyProperties.KEY_ALGORITHM_RSA,
+            "AndroidKeyStore",
+        )
+        generator.initialize(
+            KeyGenParameterSpec.Builder(
+                AUTH_ALIAS,
+                KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY,
+            )
+                .setKeySize(2048)
+                .setDigests(KeyProperties.DIGEST_SHA256)
+                .setSignaturePaddings(KeyProperties.SIGNATURE_PADDING_RSA_PKCS1)
+                .build()
+        )
+        generator.generateKeyPair()
+    }
+    val entry = store.getEntry(AUTH_ALIAS, null) as KeyStore.PrivateKeyEntry
+    val encoded = Base64.encodeToString(entry.certificate.publicKey.encoded, Base64.NO_WRAP)
+    context.openFileOutput(AUTH_PUBLIC_FILE, Context.MODE_PRIVATE).use {
+        it.write((encoded + "\n").toByteArray(Charsets.US_ASCII))
+    }
+}
+
+private fun nonce(): String {
+    val bytes = ByteArray(18)
+    SecureRandom().nextBytes(bytes)
+    return Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+}
+
+private fun sha256Hex(text: String): String =
+    MessageDigest.getInstance("SHA-256")
+        .digest(text.toByteArray(Charsets.UTF_8))
+        .joinToString("") { (it.toInt() and 0xff).toString(16).padStart(2, '0') }
+
+private fun signAuth(context: Context, purpose: String, detail: String): JSONObject {
+    ensureAuthKey(context)
+    val ts = System.currentTimeMillis() / 1000L
+    val nonce = nonce()
+    val canonical = "sc-auth-v1\n$purpose\n$ts\n$nonce\n$detail"
+    val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+    val entry = store.getEntry(AUTH_ALIAS, null) as KeyStore.PrivateKeyEntry
+    val signature = Signature.getInstance("SHA256withRSA").apply {
+        initSign(entry.privateKey)
+        update(canonical.toByteArray(Charsets.UTF_8))
+    }.sign()
+    return JSONObject()
+        .put("ts", ts)
+        .put("nonce", nonce)
+        .put("sig", Base64.encodeToString(signature, Base64.NO_WRAP))
+}
+
+private suspend fun sendControl(context: Context, action: String) = withContext(Dispatchers.IO) {
+    val auth = signAuth(context, "control", action)
+    val payload = JSONObject()
+        .put("action", action)
+        .put("ts", auth.getLong("ts"))
+        .put("nonce", auth.getString("nonce"))
+        .put("sig", auth.getString("sig"))
+        .toString() + "\n"
+    Socket().use { socket ->
+        socket.connect(InetSocketAddress(CONTROL_HOST, CONTROL_PORT), 3_000)
         socket.soTimeout = 5_000
-        socket.outputStream.write((JSONObject().put("action", action).toString() + "\n").toByteArray(Charsets.UTF_8))
+        socket.outputStream.write(payload.toByteArray(Charsets.UTF_8))
         socket.outputStream.flush()
         val line = socket.inputStream.bufferedReader(Charsets.UTF_8).readLine()
-            ?: error("Control socket closed")
+            ?: error("Control channel closed")
         val result = JSONObject(line)
         if (!result.optBoolean("ok")) error(result.optString("error", "Control failed"))
     }
 }
 
-private suspend fun postMessage(text: String, models: List<String>) = withContext(Dispatchers.IO) {
+private suspend fun postMessage(context: Context, text: String, models: List<String>) = withContext(Dispatchers.IO) {
     require(models.isNotEmpty() && models.size <= 3 && models.distinct().size == models.size)
-    LocalSocket().use { socket ->
-        socket.connect(
-            LocalSocketAddress(
-                "silent_cartographer_ui_v1",
-                LocalSocketAddress.Namespace.ABSTRACT,
-            )
-        )
-        socket.soTimeout = 180_000
-        val payload = JSONObject().put("text", text)
-            .put("models", org.json.JSONArray(models)).toString() + "\n"
-        socket.outputStream.write(payload.toByteArray(Charsets.UTF_8))
-        socket.outputStream.flush()
-        val response = socket.inputStream.bufferedReader(Charsets.UTF_8).readLine()
-            ?: error("Local bridge closed without a response")
-        val result = JSONObject(response)
-        if (!result.optBoolean("ok")) {
-            error(result.optString("error", "Local bridge rejected the message"))
+    val detail = models.joinToString(",") + "\n" + sha256Hex(text)
+    val auth = signAuth(context, "send", detail)
+    val payload = JSONObject()
+        .put("text", text)
+        .put("models", org.json.JSONArray(models))
+        .put("ts", auth.getLong("ts"))
+        .put("nonce", auth.getString("nonce"))
+        .put("sig", auth.getString("sig"))
+    val request = Request.Builder()
+        .url(ROOM_BASE + "/ui/send")
+        .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+        .build()
+    roomHttp.newCall(request).execute().use { response ->
+        val body = JSONObject(response.body?.string().orEmpty())
+        if (!response.isSuccessful || !body.optBoolean("ok")) {
+            error(body.optString("error", "Local bridge rejected the message"))
         }
     }
 }
