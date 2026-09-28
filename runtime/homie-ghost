@@ -1,26 +1,40 @@
 #!/data/data/com.termux/files/usr/bin/python3
-import json, os, pathlib, subprocess, sys, time
+import json, os, pathlib, re, socket, subprocess, sys, time
 
 HOME = pathlib.Path.home()
-UI = str(HOME / ".local/bin/ghostui")
 GHOST = str(HOME / ".local/bin/ghostctl")
+DEV = "127.0.0.1:5555"
+DAEMON_PORT = 49210
+STATE = HOME / ".local/state/gruesome-twosome"
+STATE.mkdir(parents=True, exist_ok=True)
 
 APPS = {
     "chatgpt": {
         "package": "com.openai.chatgpt",
         "component": "com.openai.chatgpt/.MainActivity",
-        "send_desc": "Send Message",
         "name": "ChatGPT",
         "workspace_name": "ChatGPT Workspace",
         "workspace_key": "ghost-chatgpt",
+        "send_desc": "Send Message",
+        "mode": "chatgpt",
     },
     "claude": {
         "package": "com.anthropic.claude",
         "component": "com.anthropic.claude/.mainactivity.MainActivity",
-        "send_desc": "Send",
         "name": "Claude",
         "workspace_name": "Claude Workspace",
         "workspace_key": "ghost-claude",
+        "send_desc": "Send",
+        "mode": "claude",
+    },
+    "gemini": {
+        "package": "com.google.android.googlequicksearchbox",
+        "component": "com.google.android.apps.bard/.shellapp.BardEntryPointActivity",
+        "name": "Gemini",
+        "workspace_name": "Gemini Workspace",
+        "workspace_key": "ghost-gemini",
+        "send_desc": "Send",
+        "mode": "gemini",
     },
 }
 
@@ -33,122 +47,195 @@ def app_env(app):
 def sh(*args, timeout=35, env=None):
     return subprocess.check_output(list(args), text=True, timeout=timeout, env=env)
 
-def dump(app):
-    return json.loads(sh(UI, "dump", env=app_env(app)))
+def adb_shell(command, timeout=15):
+    return sh("adb", "-s", DEV, "shell", command, timeout=timeout)
 
-def visible_texts(app):
-    pkg = app["package"]
-    return [n.get("text", "").strip() for n in dump(app).get("nodes", [])
-            if n.get("package") == pkg and n.get("visible")
-            and n.get("class") == "android.widget.TextView"
-            and n.get("text", "").strip()]
-
-def ensure_workspace(app):
-    env = app_env(app)
-    sh(GHOST, "start", env=env)
-    view = dump(app)
-    if any(n.get("package") == app["package"] and n.get("visible")
-           for n in view.get("nodes", [])):
+def fast(payload, timeout=130):
+    s = socket.create_connection(("127.0.0.1", DAEMON_PORT), 2)
+    try:
+        s.settimeout(timeout)
+        s.sendall((json.dumps(payload, ensure_ascii=False) + "\n").encode())
+        data = b""
+        while not data.endswith(b"\n"):
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+    finally:
+        s.close()
+    result = json.loads(data.decode())
+    if not result.get("ok"):
+        raise RuntimeError(result.get("error", "ghost daemon request failed"))
+    return result
+def ensure_daemon():
+    try:
+        fast({"op": "health"}, timeout=2)
         return
-    sh(GHOST, "launch", app["component"], timeout=20, env=env)
-    time.sleep(1)
-    view = dump(app)
-    if not any(n.get("package") == app["package"] and n.get("visible")
-               for n in view.get("nodes", [])):
-        raise RuntimeError(app["name"] + " did not become visible in " + app["workspace_name"])
+    except Exception:
+        pass
+    service = "/data/data/com.termux/files/usr/var/service/ghost-ui-daemon"
+    if pathlib.Path(service).is_dir():
+        subprocess.run(["sv", "up", service], check=False, timeout=5)
+    deadline = time.monotonic() + 4
+    while time.monotonic() < deadline:
+        try:
+            fast({"op": "health"}, timeout=1)
+            return
+        except Exception:
+            time.sleep(.1)
+    raise RuntimeError("resident UI observer unavailable")
 
+def display_file(which):
+    return STATE / ("workspace-" + which + ".display")
+
+
+def display_exists(display):
+    try:
+        raw = adb_shell("cmd display get-displays -i", timeout=4)
+        return str(display) in {line.strip() for line in raw.splitlines()}
+    except Exception:
+        return False
+
+
+def workspace_display(which, app):
+    path = display_file(which)
+    try:
+        display = int(path.read_text().strip())
+        if display > 0 and display_exists(display):
+            return display
+    except Exception:
+        pass
+    status = sh(GHOST, "start", env=app_env(app), timeout=15)
+    match = re.search(r"display=(\d+)", status)
+    if not match:
+        raise RuntimeError(app["name"] + " workspace has no display")
+    display = int(match.group(1))
+    if display == 0:
+        raise RuntimeError("physical display prohibited")
+    path.write_text(str(display) + "\n")
+    return display
+
+def snapshot(display, package):
+    return fast({"op": "snapshot", "display": display, "package": package}, timeout=3)["nodes"]
+
+def has_composer(display, package):
+    return any(n.get("editable") for n in snapshot(display, package))
+
+def wait_composer(display, package, timeout=2.5):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        try:
+            if has_composer(display, package):
+                return
+        except Exception:
+            pass
+        time.sleep(.06)
+    raise RuntimeError("composer unavailable on isolated display")
+def ensure_standard(app, display):
+    if has_composer(display, app["package"]):
+        return
+    subprocess.run(
+        ["adb", "-s", DEV, "shell", "am", "start", "--display", str(display),
+         "-n", app["component"]],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8,
+    )
+    try:
+        wait_composer(display, app["package"], timeout=2)
+    except Exception:
+        sh(GHOST, "launch", app["component"], timeout=20, env=app_env(app))
+        wait_composer(display, app["package"])
+
+def gemini_task(force=False):
+    cache = STATE / "gemini.task"
+    if not force:
+        try:
+            task = cache.read_text().strip()
+            if task.isdigit():
+                return task
+        except Exception:
+            pass
+    raw = adb_shell("am stack list", timeout=8)
+    match = re.search(
+        r"taskId=(\d+): com\.google\.android\.apps\.bard/"
+        r"com\.google\.android\.apps\.bard\.shellapp\.BardEntryPointActivity",
+        raw,
+    )
+    task = match.group(1) if match else None
+    if task:
+        cache.write_text(task + "\n")
+    return task
+
+def move_gemini(task, display):
+    if not task:
+        return
+    subprocess.run(
+        ["adb", "-s", DEV, "shell", "am", "display", "move-stack", task, str(display)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=5,
+    )
+
+def ensure_gemini(display, fresh=True):
+    task = gemini_task()
+    if not task:
+        subprocess.run(
+            ["adb", "-s", DEV, "shell", "am", "start", "--display", str(display),
+             "-n", APPS["gemini"]["component"]],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8,
+        )
+        time.sleep(.15)
+        task = gemini_task()
+    move_gemini(task, display)
+    try:
+        wait_composer(display, APPS["gemini"]["package"], timeout=1.8)
+    except Exception:
+        task = gemini_task(force=True)
+        move_gemini(task, display)
+        wait_composer(display, APPS["gemini"]["package"], timeout=3)
+    if fresh:
+        fast({
+            "op": "click_desc", "display": display,
+            "package": APPS["gemini"]["package"], "description": "New chat",
+        }, timeout=3)
+        time.sleep(.08)
+        move_gemini(task, display)
+        try:
+            wait_composer(display, APPS["gemini"]["package"], timeout=1.8)
+        except Exception:
+            task = gemini_task(force=True)
+            move_gemini(task, display)
+            wait_composer(display, APPS["gemini"]["package"], timeout=3)
 def ask(which, prompt):
     app = APPS[which]
-    env = app_env(app)
-    ensure_workspace(app)
-
-    # Silent Cartographer is the canonical conversation. Claude's native app
-    # is a stateless model adapter so stale native-thread history cannot
-    # override or contaminate the room transcript.
-    if which == "claude":
-        view = dump(app)
-        if any(n.get("package")==app["package"] and n.get("visible")
-               and n.get("description")=="New chat" for n in view.get("nodes",[])):
-            subprocess.run([UI,"click","description","New chat",app["package"]],
-                           check=True,stdout=subprocess.DEVNULL,timeout=35,env=env)
-            time.sleep(.8)
-
-    before = set(visible_texts(app))
-    subprocess.run([UI,"set-text","class","android.widget.EditText",
-                    app["package"],prompt],check=True,
-                   stdout=subprocess.DEVNULL,timeout=35,env=env)
-    time.sleep(.6)
-    view = dump(app)
-    editors = [n for n in view.get("nodes",[])
-               if n.get("package")==app["package"] and n.get("visible")
-               and n.get("class")=="android.widget.EditText"]
-    if not editors:
-        raise RuntimeError(f'{app["name"]} composer not found')
-    actual = editors[0].get("text","")
-    pasted = any(n.get("package")==app["package"] and n.get("visible")
-                 and n.get("text")=="Pasted content" for n in view.get("nodes",[]))
-    if not actual.strip() and not pasted:
-        raise RuntimeError(f'{app["name"]} composer stayed empty')
-    subprocess.run([UI,"click","description",app["send_desc"],app["package"]],
-                   check=True,stdout=subprocess.DEVNULL,timeout=35,env=env)
-
-    ignore = {"Reply to Claude…","Claude is AI and can make mistakes.",
-              "Sonnet 5","Medium","Chat","Work","Thinking"}
-    last = None
-    stable = 0
-    answer = ""
-    for _ in range(80):
-        time.sleep(1.2)
-        view = dump(app)
-
-        if which == "claude":
-            writing = any(
-                n.get("package")==app["package"] and n.get("visible")
-                and (
-                    n.get("description") in {"Claude is writing", "Stop responding"}
-                    or n.get("text") == "Stop responding"
-                )
-                for n in view.get("nodes",[])
-            )
-            if writing:
-                continue
-
-            found = []
-            for n in view.get("nodes",[]):
-                if n.get("package") != app["package"] or not n.get("visible"):
-                    continue
-                if n.get("class") != "android.widget.TextView":
-                    continue
-                t = n.get("text","").strip()
-                b = n.get("bounds") or [999,999,999,999]
-                # Claude final-answer blocks are left-aligned around x=40.
-                # Prompt and transient thinking/status rows are inset near x=112.
-                if t and b[0] <= 64 and t not in before and t not in ignore and t != actual and t != prompt:
-                    found.append(t)
-            candidate = "\n\n".join(found) if found else ""
-        else:
-            found = [t for t in visible_texts(app)
-                     if t not in before and t not in ignore
-                     and t != actual and t != prompt]
-            candidate = found[-1] if found else ""
-
-        if candidate:
-            if candidate == last:
-                stable += 1
-            else:
-                stable = 0
-            last = candidate
-            if stable >= 1:
-                answer = candidate
-                break
-
-    if not answer:
-        raise RuntimeError(f'No stable {app["name"]} final reply observed')
-    return {"speaker": app["name"], "text": answer}
+    ensure_daemon()
+    display = workspace_display(which, app)
+    if which == "gemini":
+        ensure_gemini(display, fresh=True)
+        fresh = "NOOP"
+    else:
+        ensure_standard(app, display)
+        fresh = "New chat"
+    result = fast({
+        "op": "chat",
+        "display": display,
+        "package": app["package"],
+        "mode": app["mode"],
+        "prompt": prompt,
+        "send_desc": app["send_desc"],
+        "new_chat_desc": fresh,
+        "timeout_ms": 120000,
+    }, timeout=125)
+    return {
+        "speaker": app["name"],
+        "text": result["text"],
+        "elapsed_ms": result.get("elapsed_ms"),
+        "display": display,
+        "transport": "resident_ui_observer",
+    }
 
 if __name__ == "__main__":
     if len(sys.argv) < 3 or sys.argv[1] not in APPS:
-        raise SystemExit("usage: homie-ghost chatgpt|claude PROMPT")
+        raise SystemExit("usage: homie-ghost chatgpt|claude|gemini PROMPT")
     prompt = sys.argv[2]
     if len(prompt) > 12000:
         raise SystemExit("prompt too long")

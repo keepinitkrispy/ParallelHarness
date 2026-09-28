@@ -1,0 +1,190 @@
+#!/data/data/com.termux/files/usr/bin/python3
+"""Resident authenticated control channel for Silent Cartographer's Android UI."""
+import base64
+import hashlib
+import hmac
+import json
+import os
+import pathlib
+import socketserver
+import subprocess
+import threading
+import time
+
+HOME = pathlib.Path.home()
+STATE = HOME / ".local/state/gruesome-twosome"
+STATE.mkdir(parents=True, exist_ok=True)
+CONTROL = STATE / "control.json"
+AUDIT = STATE / "control-events.jsonl"
+PUBKEY = STATE / "android-ui-auth-public.der"
+PACKAGE = "dev.keepinitkrispy.silentcartographer"
+SERVICE = pathlib.Path(os.environ.get("PREFIX", "/data/data/com.termux/files/usr")) / "var/service/silent-cartographer-room"
+HOST = "127.0.0.1"
+PORT = 49177
+LOCK = threading.RLock()
+AUTH_LOCK = threading.Lock()
+SEEN_NONCES = {}
+
+def mode():
+    try:
+        return json.loads(CONTROL.read_text())["mode"]
+    except Exception:
+        return "running"
+
+
+def service_status():
+    result = subprocess.run(["sv", "status", str(SERVICE)], text=True,
+                            capture_output=True, timeout=5)
+    return result.returncode == 0 and result.stdout.startswith("run:")
+
+
+def der_item(data, offset, tag):
+    if offset >= len(data) or data[offset] != tag:
+        raise ValueError("invalid public key DER")
+    offset += 1
+    first = data[offset]
+    offset += 1
+    if first & 0x80:
+        count = first & 0x7f
+        if count == 0 or count > 4 or offset + count > len(data):
+            raise ValueError("invalid public key DER length")
+        length = int.from_bytes(data[offset:offset + count], "big")
+        offset += count
+    else:
+        length = first
+    end = offset + length
+    if end > len(data):
+        raise ValueError("truncated public key DER")
+    return data[offset:end], end
+
+
+def rsa_public_numbers():
+    outer, _ = der_item(PUBKEY.read_bytes(), 0, 0x30)
+    _algorithm, pos = der_item(outer, 0, 0x30)
+    bit_string, _ = der_item(outer, pos, 0x03)
+    if not bit_string or bit_string[0] != 0:
+        raise ValueError("invalid RSA public key bit string")
+    rsa_seq, _ = der_item(bit_string[1:], 0, 0x30)
+    modulus, pos = der_item(rsa_seq, 0, 0x02)
+    exponent, _ = der_item(rsa_seq, pos, 0x02)
+    n = int.from_bytes(modulus, "big")
+    e = int.from_bytes(exponent, "big")
+    if n.bit_length() < 2048 or e < 3:
+        raise ValueError("unexpected RSA public key")
+    return n, e
+
+
+def verify_rsa_sha256(signature, message):
+    n, e = rsa_public_numbers()
+    size = (n.bit_length() + 7) // 8
+    if len(signature) != size:
+        return False
+    encoded = pow(int.from_bytes(signature, "big"), e, n).to_bytes(size, "big")
+    digest_info = bytes.fromhex("3031300d060960864801650304020105000420") + hashlib.sha256(message).digest()
+    padding_len = size - len(digest_info) - 3
+    if padding_len < 8:
+        return False
+    expected = b"\x00\x01" + (b"\xff" * padding_len) + b"\x00" + digest_info
+    return hmac.compare_digest(encoded, expected)
+
+
+def verify_request(body, purpose, detail):
+    if not PUBKEY.is_file():
+        raise PermissionError("Android UI auth key is not provisioned")
+    ts = int(body.get("ts", 0))
+    nonce = str(body.get("nonce", ""))
+    sig_b64 = str(body.get("sig", ""))
+    now = int(time.time())
+    if abs(now - ts) > 90:
+        raise PermissionError("stale authenticated request")
+    if not 16 <= len(nonce) <= 96:
+        raise PermissionError("invalid auth nonce")
+    try:
+        signature = base64.b64decode(sig_b64, validate=True)
+    except Exception as exc:
+        raise PermissionError("invalid auth signature encoding") from exc
+    if not 128 <= len(signature) <= 1024:
+        raise PermissionError("invalid auth signature size")
+    canonical = f"sc-auth-v1\n{purpose}\n{ts}\n{nonce}\n{detail}".encode()
+    if not verify_rsa_sha256(signature, canonical):
+        raise PermissionError("Android UI signature verification failed")
+    with AUTH_LOCK:
+        cutoff = now - 180
+        for old, seen_at in list(SEEN_NONCES.items()):
+            if seen_at < cutoff:
+                SEEN_NONCES.pop(old, None)
+        if nonce in SEEN_NONCES:
+            raise PermissionError("replayed authenticated request")
+        SEEN_NONCES[nonce] = now
+    return {
+        "mechanism": "android_keystore_rsa_sha256",
+        "package": PACKAGE,
+    }
+
+
+def audit(action, auth):
+    with AUDIT.open("a") as log:
+        log.write(json.dumps({
+            "action": action,
+            "at": time.time(),
+            "auth": auth,
+        }) + "\n")
+
+
+def set_mode(value, auth):
+    with LOCK:
+        temp = CONTROL.with_suffix(".tmp")
+        temp.write_text(json.dumps({
+            "mode": value,
+            "at": time.time(),
+            "auth": auth,
+        }) + "\n")
+        os.replace(temp, CONTROL)
+        audit(value, auth)
+
+class Handler(socketserver.StreamRequestHandler):
+    def handle(self):
+        try:
+            raw = self.rfile.readline(5001)
+            if not raw or len(raw) > 5000:
+                raise ValueError("invalid control request")
+            body = json.loads(raw)
+            action = str(body.get("action", ""))
+            if action not in ("start_server", "start", "pause", "stop"):
+                raise ValueError("unknown control action")
+            auth = verify_request(body, "control", action)
+            if action == "start_server":
+                if not SERVICE.is_dir():
+                    raise RuntimeError("room service not installed")
+                (SERVICE / "down").unlink(missing_ok=True)
+                subprocess.run(["sv", "up", str(SERVICE)], check=True, timeout=8)
+                audit(action, auth)
+            else:
+                if action == "start" and not service_status():
+                    raise RuntimeError("start the server first")
+                value = "running" if action == "start" else "paused" if action == "pause" else "stopped"
+                set_mode(value, auth)
+            self.reply({
+                "ok": True,
+                "action": action,
+                "room_running": service_status(),
+                "mode": mode(),
+                "auth": auth["mechanism"],
+            })
+        except PermissionError as exc:
+            self.reply({"ok": False, "error": str(exc)})
+        except Exception as exc:
+            self.reply({"ok": False, "error": str(exc)[:300]})
+
+    def reply(self, payload):
+        self.wfile.write(json.dumps(payload).encode() + b"\n")
+        self.wfile.flush()
+
+
+class Server(socketserver.ThreadingTCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+if __name__ == "__main__":
+    Server((HOST, PORT), Handler).serve_forever()

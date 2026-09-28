@@ -2,11 +2,13 @@ package dev.keepinitkrispy.silentcartographer
 
 import android.Manifest
 import android.content.Intent
+import android.content.Context
 import android.content.pm.PackageManager
-import android.net.LocalSocket
-import android.net.LocalSocketAddress
 import android.os.Build
 import android.os.Bundle
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import android.util.Base64
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -27,12 +29,18 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -65,13 +73,28 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.security.KeyPairGenerator
+import java.security.KeyStore
+import java.security.MessageDigest
+import java.security.SecureRandom
+import java.security.Signature
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 private const val ROOM_BASE = "http://127.0.0.1:49174"
+private const val CONTROL_HOST = "127.0.0.1"
+private const val CONTROL_PORT = 49177
+private const val AUTH_ALIAS = "silent_cartographer_ui_auth_v1"
+private const val AUTH_PUBLIC_FILE = "silent-cartographer-auth-public.der.b64"
+
+private data class ModelChoice(val id: String, val name: String, val ready: Boolean)
 
 private data class RoomEvent(
     val id: String,
@@ -102,6 +125,7 @@ class MainActivity : ComponentActivity() {
         ) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 3001)
         }
+        ensureAuthKey(this)
         enableEdgeToEdge()
         setContent {
             MaterialTheme(
@@ -124,12 +148,28 @@ private fun SilentCartographerApp() {
     var connected by remember { mutableStateOf(false) }
     var health by remember { mutableStateOf(RuntimeHealth(false, false)) }
     var error by remember { mutableStateOf<String?>(null) }
+    var menuExpanded by remember { mutableStateOf(false) }
+    var showInfo by remember { mutableStateOf(false) }
+    val availableModels = remember { mutableStateListOf<ModelChoice>() }
+    val selectedModels = remember {
+        mutableStateListOf<String>().also { list ->
+            val saved = context.getSharedPreferences("room", 0).getString("models", "chatgpt,claude,gemini").orEmpty()
+            val migrated = if (saved == "chatgpt,claude") "chatgpt,claude,gemini" else saved
+            list.addAll(migrated.split(",").filter { it.isNotBlank() }.take(4))
+        }
+    }
 
-    suspend fun refresh() {
+    fun selectModel(id: String) {
+        if (id in selectedModels) selectedModels.remove(id)
+        else if (selectedModels.size < 4) selectedModels.add(id)
+        context.getSharedPreferences("room", 0)
+            .edit().putString("models", selectedModels.joinToString(",")).apply()
+    }
+
+    suspend fun refreshEvents() {
         runCatching { fetchEvents() }
             .onSuccess { fresh ->
                 connected = true
-                error = null
                 if (fresh != events.toList()) {
                     events.clear()
                     events.addAll(fresh)
@@ -137,16 +177,49 @@ private fun SilentCartographerApp() {
             }
             .onFailure {
                 connected = false
-                error = it.message ?: "Bridge unavailable"
+                if (error == null) error = it.message ?: "Bridge unavailable"
             }
+    }
+
+    suspend fun refreshStatus() {
         health = runCatching { fetchHealth() }
             .getOrElse { RuntimeHealth(false, false) }
+        runCatching { fetchModels() }.onSuccess { models ->
+            if (models != availableModels.toList()) {
+                availableModels.clear()
+                availableModels.addAll(models)
+            }
+        }
+    }
+
+    suspend fun refresh() {
+        refreshEvents()
+        refreshStatus()
+    }
+
+    fun control(action: String) {
+        menuExpanded = false
+        scope.launch {
+            runCatching { sendControl(context, action) }
+                .onSuccess {
+                    error = null
+                    refresh()
+                }
+                .onFailure { error = it.message ?: "Control unavailable" }
+        }
     }
 
     LaunchedEffect(Unit) {
         while (isActive) {
-            refresh()
-            delay(900)
+            refreshEvents()
+            delay(200)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            refreshStatus()
+            delay(4000)
         }
     }
 
@@ -179,7 +252,7 @@ private fun SilentCartographerApp() {
                         )
                         Spacer(Modifier.height(2.dp))
                         Text(
-                            "Ryan · ChatGPT · Claude",
+                            "Ryan · ChatGPT · Claude · Gemini",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -193,11 +266,23 @@ private fun SilentCartographerApp() {
                         Text("TASKS", fontWeight = FontWeight.Bold)
                     }
 
-                    Column(horizontalAlignment = Alignment.End) {
-                        StatusText("ROOM", connected)
-                        StatusText("TASKS", health.taskControl)
-                        StatusText("AGENTS", health.agentsReady)
+                    Box {
+                        IconButton(onClick = { menuExpanded = true }) {
+                            Icon(Icons.Filled.MoreVert, contentDescription = "Menu")
+                        }
+                        DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                            DropdownMenuItem(text = { Text("Start server") }, onClick = { control("start_server") })
+                            DropdownMenuItem(text = { Text("Start") }, onClick = { control("start") })
+                            DropdownMenuItem(text = { Text("Pause") }, onClick = { control("pause") })
+                            DropdownMenuItem(text = { Text("Stop") }, onClick = { control("stop") })
+                            DropdownMenuItem(text = { Text("More info") }, onClick = {
+                                menuExpanded = false
+                                showInfo = true
+                            })
+                        }
                     }
+
+                    StatusText("ROOM", connected)
                 }
             }
         },
@@ -209,6 +294,23 @@ private fun SilentCartographerApp() {
                         .navigationBarsPadding()
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                 ) {
+                    if (availableModels.isNotEmpty()) {
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(availableModels.take(4)) { model ->
+                                FilterChip(
+                                    selected = model.id in selectedModels,
+                                    onClick = { selectModel(model.id) },
+                                    enabled = model.ready || model.id in selectedModels,
+                                    label = { Text(model.name) },
+                                )
+                            }
+                        }
+                        Text(
+                            "${selectedModels.size}/4 models selected",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     error?.let {
                         Text(
                             it,
@@ -229,7 +331,7 @@ private fun SilentCartographerApp() {
                             onValueChange = { draft = it },
                             modifier = Modifier.weight(1f),
                             placeholder = { Text("Message the room…") },
-                            enabled = !sending,
+                            enabled = !sending && selectedModels.isNotEmpty(),
                             maxLines = 5,
                             shape = RoundedCornerShape(24.dp),
                         )
@@ -239,17 +341,18 @@ private fun SilentCartographerApp() {
                             color = MaterialTheme.colorScheme.primaryContainer,
                         ) {
                             IconButton(
-                                enabled = draft.isNotBlank() && !sending,
+                                enabled = draft.isNotBlank() && !sending && selectedModels.isNotEmpty(),
                                 onClick = {
                                     val text = draft.trim()
                                     if (text.isEmpty()) return@IconButton
                                     sending = true
                                     error = null
                                     scope.launch {
-                                        runCatching { postMessage(text) }
+                                        runCatching { postMessage(context, text, selectedModels.toList()) }
                                             .onSuccess {
                                                 draft = ""
-                                                refresh()
+                                                error = null
+                                                refreshEvents()
                                             }
                                             .onFailure {
                                                 error = it.message ?: "Send failed"
@@ -300,6 +403,21 @@ private fun SilentCartographerApp() {
                 }
             }
         }
+    }
+    if (showInfo) {
+        AlertDialog(
+            onDismissRequest = { showInfo = false },
+            title = { Text("Cartographer status") },
+            text = {
+                Text(
+                    "Room: ${if (connected) "connected" else "offline"}\n" +
+                    "Task control: ${if (health.taskControl) "ready" else "offline"}\n" +
+                    "Agent bridge: ${if (health.agentsReady) "ready" else "offline"}\n" +
+                    "Models: ${availableModels.joinToString { "${it.name} ${if (it.ready) "ready" else "unavailable"}" }}"
+                )
+            },
+            confirmButton = { TextButton(onClick = { showInfo = false }) { Text("Close") } },
+        )
     }
 }
 
@@ -396,14 +514,17 @@ private suspend fun fetchEvents(): List<RoomEvent> = withContext(Dispatchers.IO)
         buildList {
             for (i in 0 until array.length()) {
                 val item = array.optJSONObject(i) ?: continue
-                if (item.optString("kind", "message") != "message") continue
+                val kind = item.optString("kind", "message")
+                // Render provider failures and runtime diagnostics; filtering these
+                // made a failed model look as if it had silently stayed quiet.
+                if (kind != "message" && kind != "system") continue
                 val id = item.optString("id")
                 if (id.isBlank()) continue
                 add(
                     RoomEvent(
                         id = id,
                         time = item.optLong("time", 0L),
-                        speaker = item.optString("speaker", "Unknown"),
+                        speaker = item.optString("speaker", if (kind == "system") "System" else "Unknown"),
                         text = item.optString("text"),
                         status = item.optString("status", "observed"),
                         source = item.optString("source", ""),
@@ -427,23 +548,114 @@ private suspend fun fetchHealth(): RuntimeHealth = withContext(Dispatchers.IO) {
     }
 }
 
-private suspend fun postMessage(text: String) = withContext(Dispatchers.IO) {
-    LocalSocket().use { socket ->
-        socket.connect(
-            LocalSocketAddress(
-                "silent_cartographer_ui_v1",
-                LocalSocketAddress.Namespace.ABSTRACT,
-            )
+private suspend fun fetchModels(): List<ModelChoice> = withContext(Dispatchers.IO) {
+    val request = Request.Builder().url(ROOM_BASE + "/models").get().build()
+    roomHttp.newCall(request).execute().use { response ->
+        if (!response.isSuccessful) error("Models returned " + response.code)
+        val items = JSONObject(response.body?.string().orEmpty()).optJSONArray("models")
+            ?: return@use emptyList()
+        buildList {
+            for (i in 0 until items.length()) {
+                val item = items.optJSONObject(i) ?: continue
+                val id = item.optString("id")
+                if (id.isNotBlank()) add(ModelChoice(id, item.optString("name", id), item.optBoolean("ready")))
+            }
+        }
+    }
+}
+
+private fun ensureAuthKey(context: Context) {
+    val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+    if (!store.containsAlias(AUTH_ALIAS)) {
+        val generator = KeyPairGenerator.getInstance(
+            KeyProperties.KEY_ALGORITHM_RSA,
+            "AndroidKeyStore",
         )
-        socket.soTimeout = 180_000
-        val payload = JSONObject().put("text", text).toString() + "\n"
+        generator.initialize(
+            KeyGenParameterSpec.Builder(
+                AUTH_ALIAS,
+                KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY,
+            )
+                .setKeySize(2048)
+                .setDigests(KeyProperties.DIGEST_SHA256)
+                .setSignaturePaddings(KeyProperties.SIGNATURE_PADDING_RSA_PKCS1)
+                .build()
+        )
+        generator.generateKeyPair()
+    }
+    val entry = store.getEntry(AUTH_ALIAS, null) as KeyStore.PrivateKeyEntry
+    val encoded = Base64.encodeToString(entry.certificate.publicKey.encoded, Base64.NO_WRAP)
+    context.openFileOutput(AUTH_PUBLIC_FILE, Context.MODE_PRIVATE).use {
+        it.write((encoded + "\n").toByteArray(Charsets.US_ASCII))
+    }
+}
+
+private fun nonce(): String {
+    val bytes = ByteArray(18)
+    SecureRandom().nextBytes(bytes)
+    return Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+}
+
+private fun sha256Hex(text: String): String =
+    MessageDigest.getInstance("SHA-256")
+        .digest(text.toByteArray(Charsets.UTF_8))
+        .joinToString("") { (it.toInt() and 0xff).toString(16).padStart(2, '0') }
+
+private fun signAuth(context: Context, purpose: String, detail: String): JSONObject {
+    ensureAuthKey(context)
+    val ts = System.currentTimeMillis() / 1000L
+    val nonce = nonce()
+    val canonical = "sc-auth-v1\n$purpose\n$ts\n$nonce\n$detail"
+    val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+    val entry = store.getEntry(AUTH_ALIAS, null) as KeyStore.PrivateKeyEntry
+    val signature = Signature.getInstance("SHA256withRSA").apply {
+        initSign(entry.privateKey)
+        update(canonical.toByteArray(Charsets.UTF_8))
+    }.sign()
+    return JSONObject()
+        .put("ts", ts)
+        .put("nonce", nonce)
+        .put("sig", Base64.encodeToString(signature, Base64.NO_WRAP))
+}
+
+private suspend fun sendControl(context: Context, action: String) = withContext(Dispatchers.IO) {
+    val auth = signAuth(context, "control", action)
+    val payload = JSONObject()
+        .put("action", action)
+        .put("ts", auth.getLong("ts"))
+        .put("nonce", auth.getString("nonce"))
+        .put("sig", auth.getString("sig"))
+        .toString() + "\n"
+    Socket().use { socket ->
+        socket.connect(InetSocketAddress(CONTROL_HOST, CONTROL_PORT), 3_000)
+        socket.soTimeout = 5_000
         socket.outputStream.write(payload.toByteArray(Charsets.UTF_8))
         socket.outputStream.flush()
-        val response = socket.inputStream.bufferedReader(Charsets.UTF_8).readLine()
-            ?: error("Local bridge closed without a response")
-        val result = JSONObject(response)
-        if (!result.optBoolean("ok")) {
-            error(result.optString("error", "Local bridge rejected the message"))
+        val line = socket.inputStream.bufferedReader(Charsets.UTF_8).readLine()
+            ?: error("Control channel closed")
+        val result = JSONObject(line)
+        if (!result.optBoolean("ok")) error(result.optString("error", "Control failed"))
+    }
+}
+
+private suspend fun postMessage(context: Context, text: String, models: List<String>) = withContext(Dispatchers.IO) {
+    require(models.isNotEmpty() && models.size <= 4 && models.distinct().size == models.size)
+    val detail = models.joinToString(",") + "\n" + sha256Hex(text)
+    val auth = signAuth(context, "send", detail)
+    val payload = JSONObject()
+        .put("text", text)
+        .put("models", org.json.JSONArray(models))
+        .put("ts", auth.getLong("ts"))
+        .put("nonce", auth.getString("nonce"))
+        .put("sig", auth.getString("sig"))
+    val request = Request.Builder()
+        .url(ROOM_BASE + "/ui/send")
+        .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+        .build()
+    roomHttp.newCall(request).execute().use { response ->
+        val body = JSONObject(response.body?.string().orEmpty())
+        if (!response.isSuccessful || !body.optBoolean("ok")) {
+            error(body.optString("error", "Local bridge rejected the message"))
         }
     }
 }
