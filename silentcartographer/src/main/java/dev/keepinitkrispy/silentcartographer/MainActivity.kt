@@ -32,7 +32,12 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -72,6 +77,9 @@ import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 private const val ROOM_BASE = "http://127.0.0.1:49174"
+private const val CONTROL_SOCKET = "silent_cartographer_control_v1"
+
+private data class ModelChoice(val id: String, val name: String, val ready: Boolean)
 
 private data class RoomEvent(
     val id: String,
@@ -124,6 +132,31 @@ private fun SilentCartographerApp() {
     var connected by remember { mutableStateOf(false) }
     var health by remember { mutableStateOf(RuntimeHealth(false, false)) }
     var error by remember { mutableStateOf<String?>(null) }
+    var menuExpanded by remember { mutableStateOf(false) }
+    var showInfo by remember { mutableStateOf(false) }
+    val availableModels = remember { mutableStateListOf<ModelChoice>() }
+    val selectedModels = remember {
+        mutableStateListOf<String>().also { list ->
+            val saved = context.getSharedPreferences("room", 0).getString("models", "chatgpt,claude").orEmpty()
+            list.addAll(saved.split(",").filter { it.isNotBlank() }.take(3))
+        }
+    }
+
+    fun selectModel(id: String) {
+        if (id in selectedModels) selectedModels.remove(id)
+        else if (selectedModels.size < 3) selectedModels.add(id)
+        context.getSharedPreferences("room", 0)
+            .edit().putString("models", selectedModels.joinToString(",")).apply()
+    }
+
+    fun control(action: String) {
+        menuExpanded = false
+        scope.launch {
+            runCatching { sendControl(action) }
+                .onSuccess { refresh() }
+                .onFailure { error = it.message ?: "Control unavailable" }
+        }
+    }
 
     suspend fun refresh() {
         runCatching { fetchEvents() }
@@ -141,6 +174,12 @@ private fun SilentCartographerApp() {
             }
         health = runCatching { fetchHealth() }
             .getOrElse { RuntimeHealth(false, false) }
+        runCatching { fetchModels() }.onSuccess { models ->
+            if (models != availableModels.toList()) {
+                availableModels.clear()
+                availableModels.addAll(models)
+            }
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -193,11 +232,23 @@ private fun SilentCartographerApp() {
                         Text("TASKS", fontWeight = FontWeight.Bold)
                     }
 
-                    Column(horizontalAlignment = Alignment.End) {
-                        StatusText("ROOM", connected)
-                        StatusText("TASKS", health.taskControl)
-                        StatusText("AGENTS", health.agentsReady)
+                    Box {
+                        IconButton(onClick = { menuExpanded = true }) {
+                            Icon(Icons.Filled.MoreVert, contentDescription = "Menu")
+                        }
+                        DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                            DropdownMenuItem(text = { Text("Start server") }, onClick = { control("start_server") })
+                            DropdownMenuItem(text = { Text("Start") }, onClick = { control("start") })
+                            DropdownMenuItem(text = { Text("Pause") }, onClick = { control("pause") })
+                            DropdownMenuItem(text = { Text("Stop") }, onClick = { control("stop") })
+                            DropdownMenuItem(text = { Text("More info") }, onClick = {
+                                menuExpanded = false
+                                showInfo = true
+                            })
+                        }
                     }
+
+                    StatusText("ROOM", connected)
                 }
             }
         },
@@ -209,6 +260,23 @@ private fun SilentCartographerApp() {
                         .navigationBarsPadding()
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                 ) {
+                    if (availableModels.isNotEmpty()) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            availableModels.take(3).forEach { model ->
+                                FilterChip(
+                                    selected = model.id in selectedModels,
+                                    onClick = { selectModel(model.id) },
+                                    enabled = model.ready || model.id in selectedModels,
+                                    label = { Text(model.name) },
+                                )
+                            }
+                        }
+                        Text(
+                            "${selectedModels.size}/3 models selected",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     error?.let {
                         Text(
                             it,
@@ -229,7 +297,7 @@ private fun SilentCartographerApp() {
                             onValueChange = { draft = it },
                             modifier = Modifier.weight(1f),
                             placeholder = { Text("Message the room…") },
-                            enabled = !sending,
+                            enabled = !sending && selectedModels.isNotEmpty(),
                             maxLines = 5,
                             shape = RoundedCornerShape(24.dp),
                         )
@@ -239,14 +307,14 @@ private fun SilentCartographerApp() {
                             color = MaterialTheme.colorScheme.primaryContainer,
                         ) {
                             IconButton(
-                                enabled = draft.isNotBlank() && !sending,
+                                enabled = draft.isNotBlank() && !sending && selectedModels.isNotEmpty(),
                                 onClick = {
                                     val text = draft.trim()
                                     if (text.isEmpty()) return@IconButton
                                     sending = true
                                     error = null
                                     scope.launch {
-                                        runCatching { postMessage(text) }
+                                        runCatching { postMessage(text, selectedModels.toList()) }
                                             .onSuccess {
                                                 draft = ""
                                                 refresh()
@@ -300,6 +368,21 @@ private fun SilentCartographerApp() {
                 }
             }
         }
+    }
+    if (showInfo) {
+        AlertDialog(
+            onDismissRequest = { showInfo = false },
+            title = { Text("Cartographer status") },
+            text = {
+                Text(
+                    "Room: ${if (connected) "connected" else "offline"}\n" +
+                    "Task control: ${if (health.taskControl) "ready" else "offline"}\n" +
+                    "Agent bridge: ${if (health.agentsReady) "ready" else "offline"}\n" +
+                    "Models: ${availableModels.joinToString { "${it.name} ${if (it.ready) "ready" else "unavailable"}" }}"
+                )
+            },
+            confirmButton = { TextButton(onClick = { showInfo = false }) { Text("Close") } },
+        )
     }
 }
 
@@ -427,7 +510,37 @@ private suspend fun fetchHealth(): RuntimeHealth = withContext(Dispatchers.IO) {
     }
 }
 
-private suspend fun postMessage(text: String) = withContext(Dispatchers.IO) {
+private suspend fun fetchModels(): List<ModelChoice> = withContext(Dispatchers.IO) {
+    val request = Request.Builder().url(ROOM_BASE + "/models").get().build()
+    roomHttp.newCall(request).execute().use { response ->
+        if (!response.isSuccessful) error("Models returned " + response.code)
+        val items = JSONObject(response.body?.string().orEmpty()).optJSONArray("models")
+            ?: return@use emptyList()
+        buildList {
+            for (i in 0 until items.length()) {
+                val item = items.optJSONObject(i) ?: continue
+                val id = item.optString("id")
+                if (id.isNotBlank()) add(ModelChoice(id, item.optString("name", id), item.optBoolean("ready")))
+            }
+        }
+    }
+}
+
+private suspend fun sendControl(action: String) = withContext(Dispatchers.IO) {
+    LocalSocket().use { socket ->
+        socket.connect(LocalSocketAddress(CONTROL_SOCKET, LocalSocketAddress.Namespace.ABSTRACT))
+        socket.soTimeout = 5_000
+        socket.outputStream.write((JSONObject().put("action", action).toString() + "\n").toByteArray(Charsets.UTF_8))
+        socket.outputStream.flush()
+        val line = socket.inputStream.bufferedReader(Charsets.UTF_8).readLine()
+            ?: error("Control socket closed")
+        val result = JSONObject(line)
+        if (!result.optBoolean("ok")) error(result.optString("error", "Control failed"))
+    }
+}
+
+private suspend fun postMessage(text: String, models: List<String>) = withContext(Dispatchers.IO) {
+    require(models.isNotEmpty() && models.size <= 3 && models.distinct().size == models.size)
     LocalSocket().use { socket ->
         socket.connect(
             LocalSocketAddress(
@@ -436,7 +549,8 @@ private suspend fun postMessage(text: String) = withContext(Dispatchers.IO) {
             )
         )
         socket.soTimeout = 180_000
-        val payload = JSONObject().put("text", text).toString() + "\n"
+        val payload = JSONObject().put("text", text)
+            .put("models", org.json.JSONArray(models)).toString() + "\n"
         socket.outputStream.write(payload.toByteArray(Charsets.UTF_8))
         socket.outputStream.flush()
         val response = socket.inputStream.bufferedReader(Charsets.UTF_8).readLine()
