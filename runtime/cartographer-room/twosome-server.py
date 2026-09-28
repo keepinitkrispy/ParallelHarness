@@ -314,32 +314,43 @@ def latest_user_event_id():
 def autonomous_conversation(trigger_id, models):
     names = {"chatgpt": "ChatGPT", "claude": "Claude", "gemini": "Gemini", "local": "Local model"}
     with TURN_LOCK:
-        for round_index in range(AUTO_MAX_ROUNDS):
-            if room_mode() != "running" or latest_user_event_id() != trigger_id:
-                return
-            snapshot = read_events()
-            substantive = 0
-            with ThreadPoolExecutor(max_workers=len(models)) as pool:
-                futures = {
-                    pool.submit(call_model, which, snapshot, round_index > 0): which
-                    for which in models
-                }
-                for future in as_completed(futures):
-                    which = futures[future]
-                    try:
-                        reply = future.result().strip()
-                        if reply and reply != PASS_TOKEN:
-                            append_event(names[which], reply, source="assistant_bridge")
-                            substantive += 1
-                    except Exception as exc:
-                        append_event(
-                            names[which],
-                            "Bridge error: " + str(exc),
-                            kind="system",
-                            status="error",
-                            source="assistant_bridge",
-                        )
-            if substantive == 0:
+        # First response wave is parallel for minimum latency.
+        if room_mode() != "running" or latest_user_event_id() != trigger_id:
+            return
+        snapshot = read_events()
+        substantive = 0
+        with ThreadPoolExecutor(max_workers=len(models)) as pool:
+            futures = {pool.submit(call_model, which, snapshot, False): which for which in models}
+            for future in as_completed(futures):
+                which = futures[future]
+                try:
+                    reply = future.result().strip()
+                    if reply and reply != PASS_TOKEN:
+                        append_event(names[which], reply, source="assistant_bridge")
+                        substantive += 1
+                except Exception as exc:
+                    append_event(names[which], "Bridge error: " + str(exc),
+                                 kind="system", status="error", source="assistant_bridge")
+        if substantive == 0:
+            return
+
+        # Follow-ups are intentionally sequential: every model sees replies that
+        # landed immediately before it, producing actual back-and-forth rather
+        # than parallel monologues from a frozen transcript.
+        for round_index in range(1, AUTO_MAX_ROUNDS):
+            round_substantive = 0
+            for which in models:
+                if room_mode() != "running" or latest_user_event_id() != trigger_id:
+                    return
+                try:
+                    reply = call_model(which, read_events(), True).strip()
+                    if reply and reply != PASS_TOKEN:
+                        append_event(names[which], reply, source="assistant_bridge")
+                        round_substantive += 1
+                except Exception as exc:
+                    append_event(names[which], "Bridge error: " + str(exc),
+                                 kind="system", status="error", source="assistant_bridge")
+            if round_substantive == 0:
                 return
 
 
