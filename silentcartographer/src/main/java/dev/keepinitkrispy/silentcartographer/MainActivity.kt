@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -154,22 +155,21 @@ private fun SilentCartographerApp() {
         mutableStateListOf<String>().also { list ->
             val saved = context.getSharedPreferences("room", 0).getString("models", "chatgpt,claude,gemini").orEmpty()
             val migrated = if (saved == "chatgpt,claude") "chatgpt,claude,gemini" else saved
-            list.addAll(migrated.split(",").filter { it.isNotBlank() }.take(3))
+            list.addAll(migrated.split(",").filter { it.isNotBlank() }.take(4))
         }
     }
 
     fun selectModel(id: String) {
         if (id in selectedModels) selectedModels.remove(id)
-        else if (selectedModels.size < 3) selectedModels.add(id)
+        else if (selectedModels.size < 4) selectedModels.add(id)
         context.getSharedPreferences("room", 0)
             .edit().putString("models", selectedModels.joinToString(",")).apply()
     }
 
-    suspend fun refresh() {
+    suspend fun refreshEvents() {
         runCatching { fetchEvents() }
             .onSuccess { fresh ->
                 connected = true
-                error = null
                 if (fresh != events.toList()) {
                     events.clear()
                     events.addAll(fresh)
@@ -177,8 +177,11 @@ private fun SilentCartographerApp() {
             }
             .onFailure {
                 connected = false
-                error = it.message ?: "Bridge unavailable"
+                if (error == null) error = it.message ?: "Bridge unavailable"
             }
+    }
+
+    suspend fun refreshStatus() {
         health = runCatching { fetchHealth() }
             .getOrElse { RuntimeHealth(false, false) }
         runCatching { fetchModels() }.onSuccess { models ->
@@ -189,19 +192,34 @@ private fun SilentCartographerApp() {
         }
     }
 
+    suspend fun refresh() {
+        refreshEvents()
+        refreshStatus()
+    }
+
     fun control(action: String) {
         menuExpanded = false
         scope.launch {
             runCatching { sendControl(context, action) }
-                .onSuccess { refresh() }
+                .onSuccess {
+                    error = null
+                    refresh()
+                }
                 .onFailure { error = it.message ?: "Control unavailable" }
         }
     }
 
     LaunchedEffect(Unit) {
         while (isActive) {
-            refresh()
-            delay(900)
+            refreshEvents()
+            delay(200)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            refreshStatus()
+            delay(4000)
         }
     }
 
@@ -234,7 +252,7 @@ private fun SilentCartographerApp() {
                         )
                         Spacer(Modifier.height(2.dp))
                         Text(
-                            "Ryan · ChatGPT · Claude",
+                            "Ryan · ChatGPT · Claude · Gemini",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -277,8 +295,8 @@ private fun SilentCartographerApp() {
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                 ) {
                     if (availableModels.isNotEmpty()) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            availableModels.take(3).forEach { model ->
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(availableModels.take(4)) { model ->
                                 FilterChip(
                                     selected = model.id in selectedModels,
                                     onClick = { selectModel(model.id) },
@@ -288,7 +306,7 @@ private fun SilentCartographerApp() {
                             }
                         }
                         Text(
-                            "${selectedModels.size}/3 models selected",
+                            "${selectedModels.size}/4 models selected",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -333,7 +351,8 @@ private fun SilentCartographerApp() {
                                         runCatching { postMessage(context, text, selectedModels.toList()) }
                                             .onSuccess {
                                                 draft = ""
-                                                refresh()
+                                                error = null
+                                                refreshEvents()
                                             }
                                             .onFailure {
                                                 error = it.message ?: "Send failed"
@@ -617,7 +636,7 @@ private suspend fun sendControl(context: Context, action: String) = withContext(
 }
 
 private suspend fun postMessage(context: Context, text: String, models: List<String>) = withContext(Dispatchers.IO) {
-    require(models.isNotEmpty() && models.size <= 3 && models.distinct().size == models.size)
+    require(models.isNotEmpty() && models.size <= 4 && models.distinct().size == models.size)
     val detail = models.joinToString(",") + "\n" + sha256Hex(text)
     val auth = signAuth(context, "send", detail)
     val payload = JSONObject()

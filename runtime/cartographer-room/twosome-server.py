@@ -304,14 +304,21 @@ def call_model(which, events, followup=False):
     data = json.loads(raw)
     return str(data.get("text", "")).strip()
 
-def autonomous_conversation(models):
+def latest_user_event_id():
+    for event in reversed(read_events()):
+        if event.get("kind") == "message" and event.get("speaker") == "Ryan":
+            return event.get("id")
+    return None
+
+
+def autonomous_conversation(trigger_id, models):
     names = {"chatgpt": "ChatGPT", "claude": "Claude", "gemini": "Gemini", "local": "Local model"}
     with TURN_LOCK:
         for round_index in range(AUTO_MAX_ROUNDS):
-            if room_mode() != "running":
+            if room_mode() != "running" or latest_user_event_id() != trigger_id:
                 return
             snapshot = read_events()
-            results = {}
+            substantive = 0
             with ThreadPoolExecutor(max_workers=len(models)) as pool:
                 futures = {
                     pool.submit(call_model, which, snapshot, round_index > 0): which
@@ -322,7 +329,8 @@ def autonomous_conversation(models):
                     try:
                         reply = future.result().strip()
                         if reply and reply != PASS_TOKEN:
-                            results[which] = reply
+                            append_event(names[which], reply, source="assistant_bridge")
+                            substantive += 1
                     except Exception as exc:
                         append_event(
                             names[which],
@@ -331,13 +339,7 @@ def autonomous_conversation(models):
                             status="error",
                             source="assistant_bridge",
                         )
-            if not results:
-                return
-            for which in models:
-                reply = results.get(which)
-                if reply:
-                    append_event(names[which], reply, source="assistant_bridge")
-            if round_index > 0 and len(results) <= 1:
+            if substantive == 0:
                 return
 
 
@@ -345,10 +347,10 @@ def run_turn(text, speaker, status, source, auth=None, models=None):
     if room_mode() != "running":
         raise ValueError("Room is paused or stopped. Use Start to resume.")
     models = selected_models(models)
-    append_event(speaker, text, status=status, source=source, auth=auth)
+    event = append_event(speaker, text, status=status, source=source, auth=auth)
     threading.Thread(
         target=autonomous_conversation,
-        args=(tuple(models),),
+        args=(event["id"], tuple(models)),
         daemon=True,
         name="cartographer-conversation",
     ).start()
@@ -358,27 +360,21 @@ def run_assistant_turn(which):
     if which not in MODEL_IDS:
         raise ValueError("unknown model")
     name = {"chatgpt": "ChatGPT", "claude": "Claude", "gemini": "Gemini", "local": "Local model"}[which]
-    with LOCK:
-        events = read_events()
-        try:
-            reply = call_model(which, events)
-            if not reply:
-                raise RuntimeError(name + " returned an empty reply")
-            return append_event(
-                name,
-                reply,
-                status="observed",
-                source="assistant_bridge",
-            )
-        except Exception as exc:
-            append_event(
-                name,
-                "Bridge error: " + str(exc),
-                kind="system",
-                status="error",
-                source="assistant_bridge",
-            )
-            raise
+    events = read_events()
+    try:
+        reply = call_model(which, events, followup=False).strip()
+        if not reply or reply == PASS_TOKEN:
+            raise RuntimeError(name + " returned no substantive reply")
+        return append_event(name, reply, status="observed", source="assistant_bridge")
+    except Exception as exc:
+        append_event(
+            name,
+            "Bridge error: " + str(exc),
+            kind="system",
+            status="error",
+            source="assistant_bridge",
+        )
+        raise
 
 class Handler(BaseHTTPRequestHandler):
     def send_json(self, code, obj):
@@ -404,8 +400,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, {
                 "ok": True,
                 "service": "silent-cartographer",
-                "contract_version": "2026-09-28.1",
+                "contract_version": "2026-09-28.2",
                 "ryan_input_auth": "android_keystore_signature_over_loopback",
+                "conversation_mode": "autonomous_parallel",
+                "autonomous_max_rounds": AUTO_MAX_ROUNDS,
                 "synthetic_posts": "http_/send_only",
                 **runtime_health(),
                 "mode": room_mode(),
@@ -442,6 +440,10 @@ class Handler(BaseHTTPRequestHandler):
                     "silent_cartographer_ui",
                     auth=auth,
                     models=models,
+                )
+                return self.send_json(
+                    202,
+                    {"ok": True, "accepted": True, "models": models},
                 )
             elif self.path == "/user-send":
                 return self.send_json(
