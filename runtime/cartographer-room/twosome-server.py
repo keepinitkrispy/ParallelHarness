@@ -1,5 +1,5 @@
 #!/data/data/com.termux/files/usr/bin/python3
-import base64, hashlib, json, pathlib, subprocess, tempfile, threading, time, unicodedata, urllib.request, uuid
+import base64, hashlib, hmac, json, pathlib, subprocess, threading, time, unicodedata, urllib.request, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HOME = pathlib.Path.home()
@@ -8,7 +8,7 @@ STATE.mkdir(parents=True, exist_ok=True)
 EVENTS = STATE / "events.jsonl"
 BRIDGE = str(HOME / ".local/bin/homie-ghost")
 TRUSTED_UI_PACKAGE = "dev.keepinitkrispy.silentcartographer"
-AUTH_PUBKEY = STATE / "android-ui-auth-public.pem"
+AUTH_PUBKEY = STATE / "android-ui-auth-public.der"
 AUTH_LOCK = threading.Lock()
 SEEN_AUTH_NONCES = {}
 # Direct backend tunnel: /models on 18080 auto-starts the rented GPU.
@@ -81,6 +81,56 @@ def selected_models(raw):
     return raw
 
 
+def der_item(data, offset, tag):
+    if offset >= len(data) or data[offset] != tag:
+        raise ValueError("invalid public key DER")
+    offset += 1
+    first = data[offset]
+    offset += 1
+    if first & 0x80:
+        count = first & 0x7f
+        if count == 0 or count > 4 or offset + count > len(data):
+            raise ValueError("invalid public key DER length")
+        length = int.from_bytes(data[offset:offset + count], "big")
+        offset += count
+    else:
+        length = first
+    end = offset + length
+    if end > len(data):
+        raise ValueError("truncated public key DER")
+    return data[offset:end], end
+
+
+def rsa_public_numbers():
+    outer, _ = der_item(AUTH_PUBKEY.read_bytes(), 0, 0x30)
+    _algorithm, pos = der_item(outer, 0, 0x30)
+    bit_string, _ = der_item(outer, pos, 0x03)
+    if not bit_string or bit_string[0] != 0:
+        raise ValueError("invalid RSA public key bit string")
+    rsa_seq, _ = der_item(bit_string[1:], 0, 0x30)
+    modulus, pos = der_item(rsa_seq, 0, 0x02)
+    exponent, _ = der_item(rsa_seq, pos, 0x02)
+    n = int.from_bytes(modulus, "big")
+    e = int.from_bytes(exponent, "big")
+    if n.bit_length() < 2048 or e < 3:
+        raise ValueError("unexpected RSA public key")
+    return n, e
+
+
+def verify_rsa_sha256(signature, message):
+    n, e = rsa_public_numbers()
+    size = (n.bit_length() + 7) // 8
+    if len(signature) != size:
+        return False
+    encoded = pow(int.from_bytes(signature, "big"), e, n).to_bytes(size, "big")
+    digest_info = bytes.fromhex("3031300d060960864801650304020105000420") + hashlib.sha256(message).digest()
+    padding_len = size - len(digest_info) - 3
+    if padding_len < 8:
+        return False
+    expected = b"\x00\x01" + (b"\xff" * padding_len) + b"\x00" + digest_info
+    return hmac.compare_digest(encoded, expected)
+
+
 def verify_ui_request(body, purpose, detail):
     if not AUTH_PUBKEY.is_file():
         raise PermissionError("Android UI auth key is not provisioned")
@@ -99,17 +149,7 @@ def verify_ui_request(body, purpose, detail):
     if not 128 <= len(signature) <= 1024:
         raise PermissionError("invalid auth signature size")
     canonical = f"sc-auth-v1\n{purpose}\n{ts}\n{nonce}\n{detail}".encode()
-    with tempfile.NamedTemporaryFile(dir=STATE) as msg, tempfile.NamedTemporaryFile(dir=STATE) as sig:
-        msg.write(canonical)
-        msg.flush()
-        sig.write(signature)
-        sig.flush()
-        result = subprocess.run(
-            ["openssl", "dgst", "-sha256", "-verify", str(AUTH_PUBKEY),
-             "-signature", sig.name, msg.name],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
-        )
-    if result.returncode != 0:
+    if not verify_rsa_sha256(signature, canonical):
         raise PermissionError("Android UI signature verification failed")
     with AUTH_LOCK:
         cutoff = now - 180
