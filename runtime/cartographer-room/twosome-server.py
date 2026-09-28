@@ -13,9 +13,12 @@ AUTH_LOCK = threading.Lock()
 SEEN_AUTH_NONCES = {}
 # Direct backend tunnel: /models on 18080 auto-starts the rented GPU.
 LOCAL_MODEL = "http://127.0.0.1:18081/v1"
-MODEL_IDS = ("chatgpt", "claude", "local")
+MODEL_IDS = ("chatgpt", "claude", "gemini", "local")
 CONTROL = STATE / "control.json"
-LOCK = threading.Lock()
+LOCK = threading.RLock()
+TURN_LOCK = threading.Lock()
+AUTO_MAX_ROUNDS = 4
+PASS_TOKEN = "[PASS]"
 HEALTH_LOCK = threading.Lock()
 HEALTH_CACHE = {"time": 0.0, "value": {"task_control": False, "agents_ready": False}}
 
@@ -31,7 +34,7 @@ def runtime_health():
         except Exception:
             pass
         agents_ready = pathlib.Path(BRIDGE).is_file()
-        for package in ("com.openai.chatgpt", "com.anthropic.claude"):
+        for package in ("com.openai.chatgpt", "com.anthropic.claude", "com.google.android.apps.bard"):
             if not agents_ready:
                 break
             result = subprocess.run(
@@ -68,16 +71,17 @@ def model_catalog():
     return [
         {"id": "chatgpt", "name": "ChatGPT", "ready": bridge and "com.openai.chatgpt" in installed},
         {"id": "claude", "name": "Claude", "ready": bridge and "com.anthropic.claude" in installed},
+        {"id": "gemini", "name": "Gemini", "ready": bridge and "com.google.android.apps.bard" in installed},
         {"id": "local", "name": "Local model", "ready": local_ready},
     ]
 
 def selected_models(raw):
     if raw is None:
-        return ["chatgpt", "claude"]
-    if not isinstance(raw, list) or not 1 <= len(raw) <= 3 or any(
+        return ["chatgpt", "claude", "gemini"]
+    if not isinstance(raw, list) or not 1 <= len(raw) <= 4 or any(
         not isinstance(item, str) or item not in MODEL_IDS for item in raw
     ) or len(set(raw)) != len(raw):
-        raise ValueError("select one to three distinct available models")
+        raise ValueError("select one to four distinct available models")
     return raw
 
 
@@ -166,15 +170,16 @@ def verify_ui_request(body, purpose, detail):
 
 
 def read_events():
-    if not EVENTS.exists():
-        return []
-    out = []
-    for line in EVENTS.read_text(errors="replace").splitlines():
-        try:
-            out.append(json.loads(line))
-        except Exception:
-            pass
-    return out
+    with LOCK:
+        if not EVENTS.exists():
+            return []
+        out = []
+        for line in EVENTS.read_text(errors="replace").splitlines():
+            try:
+                out.append(json.loads(line))
+            except Exception:
+                pass
+        return out
 
 def repair_legacy_provenance():
     if not EVENTS.exists():
@@ -215,8 +220,9 @@ def append_event(speaker, text, kind="message", status="observed", source=None, 
         event["source"] = source
     if auth:
         event["auth"] = auth
-    with EVENTS.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    with LOCK:
+        with EVENTS.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
     return event
 
 def transcript(events, max_chars=5000, max_events=14):
@@ -266,7 +272,7 @@ def prompt_for(name, events):
     )
 
 def call_model(which, events):
-    name = {"chatgpt": "ChatGPT", "claude": "Claude", "local": "Local model"}[which]
+    name = {"chatgpt": "ChatGPT", "claude": "Claude", "gemini": "Gemini", "local": "Local model"}[which]
     prompt = prompt_for(name, events)
     if which == "local":
         with urllib.request.urlopen(LOCAL_MODEL + "/models", timeout=2) as response:
@@ -300,7 +306,7 @@ def run_turn(text, speaker, status, source, auth=None, models=None):
                 append_event("System", "Model turns paused before " + which,
                              kind="system", status="paused", source="room_control")
                 break
-            name = {"chatgpt": "ChatGPT", "claude": "Claude", "local": "Local model"}[which]
+            name = {"chatgpt": "ChatGPT", "claude": "Claude", "gemini": "Gemini", "local": "Local model"}[which]
             try:
                 reply = call_model(which, events)
                 if reply:
@@ -321,7 +327,7 @@ def run_turn(text, speaker, status, source, auth=None, models=None):
 def run_assistant_turn(which):
     if which not in MODEL_IDS:
         raise ValueError("unknown model")
-    name = {"chatgpt": "ChatGPT", "claude": "Claude", "local": "Local model"}[which]
+    name = {"chatgpt": "ChatGPT", "claude": "Claude", "gemini": "Gemini", "local": "Local model"}[which]
     with LOCK:
         events = read_events()
         try:
