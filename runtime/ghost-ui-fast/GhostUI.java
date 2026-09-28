@@ -8,103 +8,84 @@ import org.json.*;
 import java.util.*;
 
 public class GhostUI {
- static String s(CharSequence x){return x==null?"":x.toString();}
  static UiAutomation ui; static int display;
- static List<AccessibilityWindowInfo> windows() {
-  SparseArray<List<AccessibilityWindowInfo>> all=ui.getWindowsOnAllDisplays();
-  List<AccessibilityWindowInfo> w=all.get(display); return w==null?Collections.emptyList():w;
- }
- static void walk(AccessibilityNodeInfo n, ArrayList<AccessibilityNodeInfo> out, int depth){
-  if(n==null||depth>60||out.size()>5000)return;
-  out.add(n);
-  for(int i=0;i<n.getChildCount();i++)walk(n.getChild(i),out,depth+1);
- }
- static ArrayList<AccessibilityNodeInfo> allNodes(){
-  ArrayList<AccessibilityNodeInfo> out=new ArrayList<>();
-  for(AccessibilityWindowInfo w:windows())walk(w.getRoot(),out,0);
-  return out;
- }
- static AccessibilityNodeInfo find(String field,String value,String pkg){
-  AccessibilityNodeInfo hit=null; int count=0;
-  for(AccessibilityNodeInfo n:allNodes()){
-   if(!n.isVisibleToUser()||!n.isEnabled())continue;
-   if(!pkg.isEmpty()&&!pkg.equals(s(n.getPackageName())))continue;
-   String got=field.equals("text")?s(n.getText()):field.equals("description")?s(n.getContentDescription()):field.equals("class")?s(n.getClassName()):"";
-   if(value.equals(got)){hit=n;count++;}
-  }
-  if(count!=1)throw new IllegalStateException("Expected unique selector; matches="+count+" field="+field+" value="+value);
-  return hit;
+ static String s(CharSequence x){return x==null?"":x.toString();}
+ static List<AccessibilityWindowInfo> windows(){
+  SparseArray<List<AccessibilityWindowInfo>> a=ui.getWindowsOnAllDisplays();
+  List<AccessibilityWindowInfo> w=a.get(display); return w==null?Collections.emptyList():w;
  }
  static boolean clickNode(AccessibilityNodeInfo n){
   while(n!=null&&!n.isClickable())n=n.getParent();
   return n!=null&&n.performAction(AccessibilityNodeInfo.ACTION_CLICK);
  }
- static boolean clickFirstDescription(String pkg,String... values){
-  for(AccessibilityNodeInfo n:allNodes()){
-   if(!n.isVisibleToUser()||!n.isEnabled()||!pkg.equals(s(n.getPackageName())))continue;
+ static boolean clickDesc(AccessibilityNodeInfo n,String pkg,String[] vals,int depth){
+  if(n==null||depth>70)return false;
+  if(n.isVisibleToUser()&&n.isEnabled()&&pkg.equals(s(n.getPackageName()))){
    String d=s(n.getContentDescription());
-   for(String v:values)if(v.equalsIgnoreCase(d)&&clickNode(n))return true;
+   for(String v:vals)if(v.equalsIgnoreCase(d)&&clickNode(n))return true;
   }
+  for(int i=0;i<n.getChildCount();i++)if(clickDesc(n.getChild(i),pkg,vals,depth+1))return true;
   return false;
  }
+ static boolean clickFirstDescription(String pkg,String... vals){
+  for(AccessibilityWindowInfo w:windows())if(clickDesc(w.getRoot(),pkg,vals,0))return true;
+  return false;
+ }
+ static AccessibilityNodeInfo editable(AccessibilityNodeInfo n,String pkg,int depth){
+  if(n==null||depth>70)return null;
+  if(n.isVisibleToUser()&&n.isEnabled()&&n.isEditable()&&pkg.equals(s(n.getPackageName())))return n;
+  for(int i=0;i<n.getChildCount();i++){AccessibilityNodeInfo x=editable(n.getChild(i),pkg,depth+1);if(x!=null)return x;}
+  return null;
+ }
  static AccessibilityNodeInfo firstEditable(String pkg){
-  for(AccessibilityNodeInfo n:allNodes())
-   if(n.isVisibleToUser()&&n.isEnabled()&&n.isEditable()&&pkg.equals(s(n.getPackageName())))return n;
+  for(AccessibilityWindowInfo w:windows()){AccessibilityNodeInfo x=editable(w.getRoot(),pkg,0);if(x!=null)return x;}
   throw new IllegalStateException("No editable field for "+pkg);
  }
- static String visibleReply(String pkg,String prompt){
-  ArrayList<String> parts=new ArrayList<>();
-  for(AccessibilityNodeInfo n:allNodes()){
-   if(!n.isVisibleToUser()||!pkg.equals(s(n.getPackageName())))continue;
-   String t=s(n.getText()).trim(); if(t.isEmpty()||t.equals(prompt))continue;
-   Rect r=new Rect();n.getBoundsInScreen(r);
-   if(r.left>140)continue;
-   String lo=t.toLowerCase(Locale.ROOT);
-   if(lo.equals("working")||lo.equals("show more")||lo.equals("retry")||lo.equals("copy")||lo.equals("good response")||lo.equals("bad response"))continue;
-   if(!parts.contains(t))parts.add(t);
+ static void collectReply(AccessibilityNodeInfo n,String pkg,String prompt,LinkedHashSet<String> out,int depth){
+  if(n==null||depth>70||out.size()>250)return;
+  if(n.isVisibleToUser()&&pkg.equals(s(n.getPackageName()))){
+   String t=s(n.getText()).trim();
+   if(!t.isEmpty()&&!t.equals(prompt)){
+    Rect r=new Rect();n.getBoundsInScreen(r);
+    String lo=t.toLowerCase(Locale.ROOT);
+    if(r.left<=140&&!lo.equals("working")&&!lo.equals("thinking")&&!lo.equals("show more")&&!lo.equals("retry")&&!lo.equals("copy")&&!lo.equals("good response")&&!lo.equals("bad response"))out.add(t);
+   }
   }
-  return String.join("\n",parts).trim();
+  for(int i=0;i<n.getChildCount();i++)collectReply(n.getChild(i),pkg,prompt,out,depth+1);
+ }
+ static String visibleReply(String pkg,String prompt){
+  LinkedHashSet<String> out=new LinkedHashSet<>();
+  for(AccessibilityWindowInfo w:windows())collectReply(w.getRoot(),pkg,prompt,out,0);
+  return String.join("\n",out).trim();
  }
  public static void main(String[] args)throws Exception{
   if(Looper.getMainLooper()==null)Looper.prepareMainLooper();
-  display=Integer.parseInt(args[0]); if(display==0)throw new IllegalArgumentException("Physical display prohibited");
-  String op=args.length>1?args[1]:"dump";
-  HandlerThread ht=new HandlerThread("ghost-ui");ht.start();
+  display=Integer.parseInt(args[0]);if(display==0)throw new IllegalArgumentException("Physical display prohibited");
+  String op=args.length>1?args[1]:"ask";
+  HandlerThread ht=new HandlerThread("ghost-ui-fast");ht.start();
   try{
    Class<?> ic=Class.forName("android.app.IUiAutomationConnection");
    Object conn=Class.forName("android.app.UiAutomationConnection").getDeclaredConstructor().newInstance();
    ui=(UiAutomation)UiAutomation.class.getConstructor(Looper.class,ic).newInstance(ht.getLooper(),conn);
    UiAutomation.class.getMethod("connect",int.class).invoke(ui,1);
    AccessibilityServiceInfo si=ui.getServiceInfo();si.flags|=AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS|AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS;ui.setServiceInfo(si);
-   if(op.equals("ask")){
-    String pkg=args[2], prompt=args[3];
-    clickFirstDescription(pkg,"New chat","Start new chat");
-    Thread.sleep(250);
-    AccessibilityNodeInfo edit=firstEditable(pkg);
-    Bundle b=new Bundle();b.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,prompt);
-    if(!edit.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT,b))throw new IllegalStateException("set text rejected");
-    Thread.sleep(180);
-    if(!clickFirstDescription(pkg,"Send","Send message","Submit"))throw new IllegalStateException("Send control not found");
-    String last="",candidate=""; long changed=System.currentTimeMillis(), deadline=changed+120000;
-    while(System.currentTimeMillis()<deadline){
-     Thread.sleep(180);
-     String now=visibleReply(pkg,prompt);
-     if(!now.equals(last)){last=now;changed=System.currentTimeMillis();}
-     String lo=now.toLowerCase(Locale.ROOT);
-     boolean useful=!now.isEmpty()&&!lo.equals("working")&&!lo.endsWith("working");
-     if(useful)candidate=now;
-     if(!candidate.isEmpty()&&System.currentTimeMillis()-changed>700)break;
-    }
-    if(candidate.isEmpty())throw new IllegalStateException("No stable model reply");
-    System.out.println(new JSONObject().put("text",candidate).toString());
-   } else if(op.equals("dump")){
-    JSONArray arr=new JSONArray();
-    for(AccessibilityNodeInfo n:allNodes()){
-     Rect r=new Rect();n.getBoundsInScreen(r);
-     arr.put(new JSONObject().put("text",s(n.getText())).put("description",s(n.getContentDescription())).put("class",s(n.getClassName())).put("package",s(n.getPackageName())).put("editable",n.isEditable()).put("visible",n.isVisibleToUser()).put("bounds",new JSONArray(new int[]{r.left,r.top,r.right,r.bottom})));
-    }
-    System.out.println(new JSONObject().put("display",display).put("nodes",arr).toString());
-   } else throw new IllegalArgumentException("Unknown operation");
-  } finally {if(ui!=null)try{UiAutomation.class.getMethod("disconnect").invoke(ui);}catch(Exception e){} ht.quitSafely();}
+   if(!op.equals("ask"))throw new IllegalArgumentException("Unknown operation");
+   String pkg=args[2],prompt=args[3];
+   clickFirstDescription(pkg,"New chat","Start new chat");Thread.sleep(200);
+   AccessibilityNodeInfo edit=firstEditable(pkg);
+   Bundle b=new Bundle();b.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,prompt);
+   if(!edit.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT,b))throw new IllegalStateException("set text rejected");
+   Thread.sleep(120);
+   if(!clickFirstDescription(pkg,"Send","Send message","Submit"))throw new IllegalStateException("Send control not found");
+   String last="",candidate="";long changed=System.currentTimeMillis(),deadline=changed+120000;
+   while(System.currentTimeMillis()<deadline){
+    Thread.sleep(150);String now=visibleReply(pkg,prompt);
+    if(!now.equals(last)){last=now;changed=System.currentTimeMillis();}
+    if(!now.isEmpty())candidate=now;
+    if(!candidate.isEmpty()&&System.currentTimeMillis()-changed>650)break;
+   }
+   if(candidate.isEmpty())throw new IllegalStateException("No stable model reply");
+   System.out.println(new JSONObject().put("text",candidate).toString());
+  }finally{if(ui!=null)try{UiAutomation.class.getMethod("disconnect").invoke(ui);}catch(Exception e){}ht.quitSafely();}
  }
 }
