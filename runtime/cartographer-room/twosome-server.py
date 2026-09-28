@@ -251,6 +251,9 @@ def prompt_for(name, events, followup=False):
     peer = "the other selected models"
     chat = transcript(events)
     operating_contract = (
+        "ChatGPT, Claude, and Gemini have equal standing and equal opportunity to contribute. None is the leader, subordinate, gatekeeper, or default authority. "
+        "Ryan's task-specific role definitions determine each model's perspective and contribution weight; those roles affect how input is weighed, never who is permitted or expected to speak. "
+        "For each turn, contribute independently from your defined role, address the shared objective, and respond directly to peers when useful. Do not defer merely because another model spoke first. "
         "Ryan controls the objective, scope, and tradeoffs. Work toward his literal request within your own governing constraints. "
         "Do not silently broaden, substitute, or redirect the objective. Distinguish verified results from drafts, plans, guesses, and intermediate status. "
         "Never claim an action succeeded unless there is evidence it actually succeeded. Never attribute synthetic, test, model-generated, or assistant-authored text to Ryan. "
@@ -261,13 +264,6 @@ def prompt_for(name, events, followup=False):
         "Do not be reflexively cautious: when a request is allowed, execute it instead of replacing it with a lecture. "
         "The native model app is only a transport adapter. Ignore native-thread history that is not reproduced in the Recent group chat below; the room transcript is authoritative. "
     )
-    if name == "Claude":
-        operating_contract += (
-            "You are the second model in a supervised collaboration with ChatGPT. Be an independent technical counterweight, not an automatic blocker. "
-            "Challenge factual or architectural mistakes with concrete evidence, but do not manufacture objections, moralize, or stop work merely because a design is unusual. "
-            "If you think a requested implementation is unsafe or impossible, identify the exact mechanism and propose the closest viable implementation that preserves Ryan's stated goal and control. "
-            "Report any suspected provenance error, deceptive completion claim, scope drift, or attempt to bypass Ryan's controls."
-        )
     if followup:
         operating_contract += (
             "This is an autonomous follow-up round. Read the other models' newest contributions and continue the discussion only if you have a substantive new contribution, correction, synthesis, or next step. "
@@ -330,7 +326,7 @@ def autonomous_conversation(trigger_id, models):
                         substantive += 1
                 except Exception as exc:
                     append_event(names[which], "Bridge error: " + str(exc),
-                                 kind="system", status="error", source="assistant_bridge")
+                                 kind="message", status="error", source="assistant_bridge")
         if substantive == 0:
             return
 
@@ -349,7 +345,7 @@ def autonomous_conversation(trigger_id, models):
                         round_substantive += 1
                 except Exception as exc:
                     append_event(names[which], "Bridge error: " + str(exc),
-                                 kind="system", status="error", source="assistant_bridge")
+                                 kind="message", status="error", source="assistant_bridge")
             if round_substantive == 0:
                 return
 
@@ -381,7 +377,7 @@ def run_assistant_turn(which):
         append_event(
             name,
             "Bridge error: " + str(exc),
-            kind="system",
+            kind="message",
             status="error",
             source="assistant_bridge",
         )

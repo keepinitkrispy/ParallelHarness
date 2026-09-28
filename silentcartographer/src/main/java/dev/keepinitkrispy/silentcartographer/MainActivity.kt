@@ -514,14 +514,17 @@ private suspend fun fetchEvents(): List<RoomEvent> = withContext(Dispatchers.IO)
         buildList {
             for (i in 0 until array.length()) {
                 val item = array.optJSONObject(i) ?: continue
-                if (item.optString("kind", "message") != "message") continue
+                val kind = item.optString("kind", "message")
+                // Render provider failures and runtime diagnostics; filtering these
+                // made a failed model look as if it had silently stayed quiet.
+                if (kind != "message" && kind != "system") continue
                 val id = item.optString("id")
                 if (id.isBlank()) continue
                 add(
                     RoomEvent(
                         id = id,
                         time = item.optLong("time", 0L),
-                        speaker = item.optString("speaker", "Unknown"),
+                        speaker = item.optString("speaker", if (kind == "system") "System" else "Unknown"),
                         text = item.optString("text"),
                         status = item.optString("status", "observed"),
                         source = item.optString("source", ""),
