@@ -149,15 +149,6 @@ private fun SilentCartographerApp() {
             .edit().putString("models", selectedModels.joinToString(",")).apply()
     }
 
-    fun control(action: String) {
-        menuExpanded = false
-        scope.launch {
-            runCatching { sendControl(action) }
-                .onSuccess { refresh() }
-                .onFailure { error = it.message ?: "Control unavailable" }
-        }
-    }
-
     suspend fun refresh() {
         runCatching { fetchEvents() }
             .onSuccess { fresh ->
@@ -179,6 +170,15 @@ private fun SilentCartographerApp() {
                 availableModels.clear()
                 availableModels.addAll(models)
             }
+        }
+    }
+
+    fun control(action: String) {
+        menuExpanded = false
+        scope.launch {
+            runCatching { sendControl(action) }
+                .onSuccess { refresh() }
+                .onFailure { error = it.message ?: "Control unavailable" }
         }
     }
 
