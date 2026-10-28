@@ -192,6 +192,8 @@ class AgentEngine(
     private val todoStore: TodoStore? = null,
     private val repoMap: com.androidharness.app.repomap.RepoMapCache? = null,
     private val cavemanSettings: suspend () -> com.androidharness.app.data.AppSettings = { com.androidharness.app.data.AppSettings() },
+    /** Inject only from the trusted application composition root, never model/tool input. */
+    private val csreAuthority: com.androidharness.app.tools.CsreAuthority? = null,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -241,7 +243,7 @@ class AgentEngine(
         var replySettings = cavemanSettings()
         var systemPrompt = systemPrompt(workspace, mode, fullAccess = false, repoMapEnabled = repoMapEnabled) + if (pinnedInstructions.isBlank()) "" else "\n\nPinned user instructions:\n$pinnedInstructions"
         var promptSandboxOff = false
-        val runRegistry = registry.withExtra(extraTools)
+        val runRegistry = registry.withExtra(extraTools).let { combined ->\n            if (csreAuthority != null) combined.withCsreAuthority(csreAuthority) else combined\n        }
         val tools = runRegistry.schemas(
             readOnlyOnly = mode == AgentMode.PLAN,
             context = ToolContext(workspace = workspace, sessionId = sessionId),
