@@ -42,14 +42,24 @@ interface Tool {
     suspend fun execute(args: JsonObject, ctx: ToolContext): ToolResult
 }
 
-class ToolRegistry(private val tools: List<Tool>) {
+class ToolRegistry(
+    private val tools: List<Tool>,
+    private val csreAuthority: CsreAuthority? = null,
+) {
     private val byName = tools.associateBy { it.name }
+        .mapValues { (_, tool) ->
+            if (csreAuthority == null) tool else CsreGatedTool(tool, csreAuthority)
+        }
 
     fun get(name: String): Tool? = byName[name]
 
-    /** Run-scoped extras (MCP tools) merge on top of the static set. */
+    /** Run-scoped extras inherit the same CSRE boundary; MCP cannot bypass it. */
     fun withExtra(extra: List<Tool>): ToolRegistry =
-        if (extra.isEmpty()) this else ToolRegistry(tools + extra)
+        if (extra.isEmpty()) this else ToolRegistry(tools + extra, csreAuthority)
+
+    /** Only an app-controlled, externally backed authority may be injected. */
+    fun withCsreAuthority(authority: CsreAuthority): ToolRegistry =
+        ToolRegistry(tools, authority)
 
     fun schemas(readOnlyOnly: Boolean = false, context: ToolContext? = null) = byName.values
         .filter { (!readOnlyOnly || it.isReadOnly) && (context == null || it.isAvailable(context)) }
