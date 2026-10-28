@@ -243,7 +243,9 @@ class AgentEngine(
         var replySettings = cavemanSettings()
         var systemPrompt = systemPrompt(workspace, mode, fullAccess = false, repoMapEnabled = repoMapEnabled) + if (pinnedInstructions.isBlank()) "" else "\n\nPinned user instructions:\n$pinnedInstructions"
         var promptSandboxOff = false
-        val runRegistry = registry.withExtra(extraTools).let { combined ->\n            if (csreAuthority != null) combined.withCsreAuthority(csreAuthority) else combined\n        }
+        val runRegistry = registry.withExtra(extraTools).let { combined ->
+            if (csreAuthority != null) combined.withCsreAuthority(csreAuthority) else combined
+        }
         val tools = runRegistry.schemas(
             readOnlyOnly = mode == AgentMode.PLAN,
             context = ToolContext(workspace = workspace, sessionId = sessionId),
