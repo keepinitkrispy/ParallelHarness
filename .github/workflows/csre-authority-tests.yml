@@ -30,3 +30,12 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew :app:testDebugUnitTest --tests 'com.androidharness.app.tools.CsreAuthorityTest' --tests 'com.androidharness.app.agent.ClaudeSemanticJudgeTest' --no-daemon
+      - name: Assemble installable debug APK
+        run: ./gradlew :app:assembleDebug --no-daemon
+      - name: Upload ParallelHarness debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: parallelharness-csre-claude-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
