@@ -1,0 +1,29 @@
+name: CSRE authority seam tests
+
+on:
+  pull_request:
+    paths:
+      - 'app/src/main/java/com/androidharness/app/tools/CsreAuthority.kt'
+      - 'app/src/main/java/com/androidharness/app/tools/Tool.kt'
+      - 'app/src/main/java/com/androidharness/app/agent/AgentEngine.kt'
+      - 'app/src/test/java/com/androidharness/app/tools/CsreAuthorityTest.kt'
+      - '.github/workflows/csre-authority-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Compile app and run CSRE contract tests
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests 'com.androidharness.app.tools.CsreAuthorityTest' --no-daemon
