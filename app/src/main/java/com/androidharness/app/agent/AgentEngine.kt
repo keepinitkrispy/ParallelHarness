@@ -487,7 +487,7 @@ class AgentEngine(
                 if (semanticJudge != null && (assistant.text.isNotBlank() || calls.isNotEmpty())) {
                     val lastUser = working.asReversed().firstOrNull { it.role == Role.USER }?.text.orEmpty()
                     if (lastUser.isNotBlank()) {
-                        semanticJudge.review(
+                        semanticJudge.reviewLater(
                             sessionId = sessionId,
                             userMessage = lastUser,
                             assistantText = assistant.text,
