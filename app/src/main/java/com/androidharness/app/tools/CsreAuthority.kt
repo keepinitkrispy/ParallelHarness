@@ -1,5 +1,6 @@
 package com.androidharness.app.tools
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonObject
 
 /**
@@ -50,6 +51,8 @@ internal class CsreGatedTool(
         )
         val decision = try {
             authority.decide(request)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             return ToolResult(false, "CSRE authority unavailable; no tool executed.")
         }
@@ -69,6 +72,8 @@ internal class CsreGatedTool(
         }
         val result = try {
             delegate.execute(args, ctx)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             val error = e.message ?: "tool failed"
             try {
