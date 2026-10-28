@@ -137,6 +137,20 @@ class AppContainer(val appContext: Context) {
         searchApi = { searchApiConfig },
     )
     val mcp = com.androidharness.app.tools.mcp.McpManager(appContext, linuxEnv, keys, codeGraph)
+    private val claudeSemanticJudge = com.androidharness.app.agent.ClaudeSemanticJudge(
+        credentials = {
+            // Use only an Anthropic provider already configured by the user.
+            // Never extract or persist the API key in a log or model prompt.
+            providers.providers.first()
+                .firstOrNull {
+                    it.type == com.androidharness.app.llm.ProviderType.ANTHROPIC &&
+                        it.baseUrl.trimEnd('/') == "https://api.anthropic.com" &&
+                        !providers.apiKey(it.id).isNullOrBlank()
+                }?.let { provider -> provider to providers.apiKey(provider.id)!! }
+        },
+        providerFactory = { config -> ProviderFactory.create(config) },
+        auditFile = java.io.File(appContext.filesDir, "semantic-review/claude-advisory.jsonl"),
+    )
     val engine = AgentEngine(
         providerFactory = { config -> ProviderFactory.create(config) },
         registry = registry,
@@ -148,6 +162,7 @@ class AppContainer(val appContext: Context) {
         todoStore = todoStore,
         repoMap = repoMap,
         cavemanSettings = { settings.settings.first().also { cavemanSettings.set(it); disabledSkills.set(it.disabledSkills) } },
+        semanticJudge = claudeSemanticJudge,
     )
     val runManager = com.androidharness.app.agent.RunManager(
         context = appContext,

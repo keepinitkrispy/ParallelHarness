@@ -192,6 +192,10 @@ class AgentEngine(
     private val todoStore: TodoStore? = null,
     private val repoMap: com.androidharness.app.repomap.RepoMapCache? = null,
     private val cavemanSettings: suspend () -> com.androidharness.app.data.AppSettings = { com.androidharness.app.data.AppSettings() },
+    /** Inject only from the trusted application composition root, never model/tool input. */
+    private val csreAuthority: com.androidharness.app.tools.CsreAuthority? = null,
+    /** Claude semantic review is advisory only and cannot influence tool authority. */
+    private val semanticJudge: ClaudeSemanticJudge? = null,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -241,7 +245,9 @@ class AgentEngine(
         var replySettings = cavemanSettings()
         var systemPrompt = systemPrompt(workspace, mode, fullAccess = false, repoMapEnabled = repoMapEnabled) + if (pinnedInstructions.isBlank()) "" else "\n\nPinned user instructions:\n$pinnedInstructions"
         var promptSandboxOff = false
-        val runRegistry = registry.withExtra(extraTools)
+        val runRegistry = registry.withExtra(extraTools).let { combined ->
+            if (csreAuthority != null) combined.withCsreAuthority(csreAuthority) else combined
+        }
         val tools = runRegistry.schemas(
             readOnlyOnly = mode == AgentMode.PLAN,
             context = ToolContext(workspace = workspace, sessionId = sessionId),
@@ -476,6 +482,19 @@ class AgentEngine(
                 )
                 working += assistant
                 emit(AgentEvent.AssistantCommitted(assistant))
+                // Run independent Claude review on the committed proposal.
+                // Never gate, rewrite, or authorize a tool based on this output.
+                if (semanticJudge != null && (assistant.text.isNotBlank() || calls.isNotEmpty())) {
+                    val lastUser = working.asReversed().firstOrNull { it.role == Role.USER }?.text.orEmpty()
+                    if (lastUser.isNotBlank()) {
+                        semanticJudge.reviewLater(
+                            sessionId = sessionId,
+                            userMessage = lastUser,
+                            assistantText = assistant.text,
+                            proposedCalls = assistant.toolCalls,
+                        )
+                    }
+                }
             }
 
             when {
