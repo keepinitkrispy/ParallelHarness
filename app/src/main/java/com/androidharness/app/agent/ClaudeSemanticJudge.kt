@@ -8,6 +8,11 @@ import com.androidharness.app.llm.ProviderConfig
 import com.androidharness.app.llm.RequestOptions
 import com.androidharness.app.llm.StreamEvent
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.collect
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
@@ -102,6 +107,22 @@ class ClaudeSemanticJudge(
     private val providerFactory: (ProviderConfig) -> LlmProvider,
     private val auditFile: File,
 ) {
+    // Reviews are investigation only; their latency cannot hold the action path.
+    private val reviewScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    fun reviewLater(
+        sessionId: String,
+        userMessage: String,
+        assistantText: String,
+        proposedCalls: List<ToolCallData>,
+    ) {
+        reviewScope.launch {
+            withTimeoutOrNull(20_000) {
+                review(sessionId, userMessage, assistantText, proposedCalls)
+            }
+        }
+    }
+
     suspend fun review(
         sessionId: String,
         userMessage: String,
