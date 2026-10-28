@@ -1,4 +1,4 @@
-name: CSRE authority seam tests
+name: CSRE authority and Claude semantic judge tests
 
 on:
   pull_request:
@@ -6,7 +6,10 @@ on:
       - 'app/src/main/java/com/androidharness/app/tools/CsreAuthority.kt'
       - 'app/src/main/java/com/androidharness/app/tools/Tool.kt'
       - 'app/src/main/java/com/androidharness/app/agent/AgentEngine.kt'
+      - 'app/src/main/java/com/androidharness/app/agent/ClaudeSemanticJudge.kt'
+      - 'app/src/main/java/com/androidharness/app/HarnessApp.kt'
       - 'app/src/test/java/com/androidharness/app/tools/CsreAuthorityTest.kt'
+      - 'app/src/test/java/com/androidharness/app/agent/ClaudeSemanticJudgeTest.kt'
       - '.github/workflows/csre-authority-tests.yml'
   workflow_dispatch:
 
@@ -23,7 +26,7 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
-      - name: Compile app and run CSRE contract tests
+      - name: Compile app and run CSRE and Claude reviewer tests
         run: |
           chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest --tests 'com.androidharness.app.tools.CsreAuthorityTest' --no-daemon
+          ./gradlew :app:testDebugUnitTest --tests 'com.androidharness.app.tools.CsreAuthorityTest' --tests 'com.androidharness.app.agent.ClaudeSemanticJudgeTest' --no-daemon
