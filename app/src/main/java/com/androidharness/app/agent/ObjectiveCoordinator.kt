@@ -205,7 +205,7 @@ class ObjectiveCoordinator(context: Context) {
                          else successful.map { it.first }
             if (state.optBoolean("action_task") && inspected.isEmpty())
                 return@withContext ToolResult(false, "Action needs a successful independent verification tool")
-            val exact = Regex("(?i)containing exactly\s+([A-Za-z0-9_-]+)")
+            val exact = Regex("(?i)containing exactly\\s+([A-Za-z0-9_-]+)")
                 .find(state.optString("goal"))?.groupValues?.getOrNull(1)
             if (exact != null && inspected.none { it.second.contains(exact) })
                 return@withContext ToolResult(false, "Read-back does not contain the exact requested content")
