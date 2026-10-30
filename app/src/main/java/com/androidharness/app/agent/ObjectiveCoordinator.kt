@@ -109,33 +109,42 @@ class ObjectiveCoordinator(context: Context) {
         }
     suspend fun before(sessionId: String, callId: String, tool: String, arguments: String): String? =
         withContext(Dispatchers.IO) {
-            val state = load(sessionId) ?: return@withContext null
-            if (state.optString("status") == "paused") return@withContext "Owner paused the task"
-            state.getJSONArray("tools").put(JSONObject().apply {
-                put("id", callId)
-                put("name", tool)
-                put("args_hash", hash(arguments))
-                put("started", System.currentTimeMillis())
-                put("status", "started")
-            })
-            save(sessionId, state)
-            null
+            synchronized(lock) {
+                val state = load(sessionId) ?: return@synchronized null
+                if (state.optString("status") == "paused") return@synchronized "Owner paused the task"
+                state.getJSONArray("tools").put(JSONObject().apply {
+                    put("id", callId)
+                    put("name", tool)
+                    put("args_hash", hash(arguments))
+                    put("started", System.currentTimeMillis())
+                    put("status", "started")
+                })
+                save(sessionId, state)
+                null
+            }
         }
     suspend fun after(sessionId: String, callId: String, result: ToolResult) =
         withContext(Dispatchers.IO) {
-            val state = load(sessionId) ?: return@withContext
-            val events = state.getJSONArray("tools")
-            for (i in events.length() - 1 downTo 0) {
-                val item = events.optJSONObject(i) ?: continue
-                if (item.optString("id") == callId && item.optString("status") == "started") {
-                    item.put("status", if (result.ok) "succeeded" else "failed")
-                    item.put("output_sha256", hash(result.output))
-                    item.put("output_excerpt", result.output.take(200))
-                    item.put("finished", System.currentTimeMillis())
-                    break
+            synchronized(lock) {
+                val state = load(sessionId) ?: return@synchronized
+                val events = state.getJSONArray("tools")
+                for (i in events.length() - 1 downTo 0) {
+                    val item = events.optJSONObject(i) ?: continue
+                    if (item.optString("id") == callId && item.optString("status") == "started") {
+                        item.put("status", if (result.ok) "succeeded" else "failed")
+                        item.put("output_sha256", hash(result.output))
+                        item.put("output_excerpt", result.output.take(200))
+                        item.put("finished", System.currentTimeMillis())
+                        if (item.optString("name") == "objective_finish" && !result.ok) {
+                            val failures = state.optInt("finish_failures", 0) + 1
+                            state.put("finish_failures", failures)
+                            if (failures >= 4) state.put("status", "unverified")
+                        }
+                        break
+                    }
                 }
+                save(sessionId, state)
             }
-            save(sessionId, state)
         }
     suspend fun onModelStop(sessionId: String, response: String): String? =
         withContext(Dispatchers.IO) {
@@ -166,7 +175,7 @@ class ObjectiveCoordinator(context: Context) {
                 "using tools now. A plan or explanation does not complete the task."
             } else {
                 "Execution has occurred but the task is not verified as completed. Inspect the actual result " +
-                "and call objective_finish with successful tool IDs; report a genuine blocker otherwise."
+                "and call objective_finish with result and evidence_call_ids: []; native receipts supply the IDs. Report a genuine blocker otherwise."
             }
         }
     suspend fun complete(sessionId: String, evidence: List<String>, result: String): ToolResult =
@@ -175,32 +184,41 @@ class ObjectiveCoordinator(context: Context) {
             if (state.optString("status") != "running")
                 return@withContext ToolResult(false, "Task not in running state")
             val events = state.getJSONArray("tools")
-            val successful = mutableSetOf<String>()
-            val inspected = mutableSetOf<String>()
+            val successful = mutableListOf<Pair<String, String>>()
+            val inspected = mutableListOf<Pair<String, String>>()
             for (i in 0 until events.length()) {
                 val event = events.optJSONObject(i) ?: continue
                 if (event.optString("status") != "succeeded") continue
-                val id = event.optString("id")
-                successful.add(id)
                 val name = event.optString("name")
-                if (name.startsWith("read_") || name.startsWith("browser_get") ||
+                if (name == "objective_finish") continue
+                val id = event.optString("id")
+                successful.add(id to name)
+                val check = name.startsWith("read_") || name.startsWith("browser_get") ||
                     name.startsWith("browser_snapshot") || name.startsWith("git_status") ||
-                    name == "shell" || name.startsWith("mcp__")) inspected.add(id)
+                    name.startsWith("git_diff") || name.startsWith("mcp__execution_lab__delegation_result")
+                if (check) inspected.add(id to event.optString("output_excerpt"))
             }
-            if (result.isBlank() || evidence.isEmpty() || !evidence.all { it in successful })
-                return@withContext ToolResult(false, "Completion needs a result and actual successful tool-call IDs")
-            if (state.optBoolean("action_task") && !evidence.any { it in inspected })
-                return@withContext ToolResult(false, "Action needs an observed successful verification tool call")
+            val successfulIds = successful.map { it.first }.toSet()
+            if (result.isBlank() || successfulIds.isEmpty())
+                return@withContext ToolResult(false, "No independent successful execution evidence exists")
+            val chosen = if (evidence.isNotEmpty() && evidence.all { it in successfulIds }) evidence
+                         else successful.map { it.first }
+            if (state.optBoolean("action_task") && inspected.isEmpty())
+                return@withContext ToolResult(false, "Action needs a successful independent verification tool")
+            val exact = Regex("(?i)containing exactly\s+([A-Za-z0-9_-]+)")
+                .find(state.optString("goal"))?.groupValues?.getOrNull(1)
+            if (exact != null && inspected.none { it.second.contains(exact) })
+                return@withContext ToolResult(false, "Read-back does not contain the exact requested content")
             state.put("status", "completed")
-            state.put("evidence", JSONArray(evidence))
+            state.put("evidence", JSONArray(chosen))
             state.put("result", result)
             state.put("completed", System.currentTimeMillis())
             save(sessionId, state)
-            ToolResult(true, "Verified task receipt recorded for " + evidence.size + " successful tool(s). " + result)
+            ToolResult(true, "Native task receipt recorded for " + chosen.size + " successful tool(s), with independent verification. " + result)
         }
     fun completionTool(): Tool = object : Tool {
         override val name = "objective_finish"
-        override val description = "Mark the active task completed only with real successful tool-call IDs and result. The native coordinator verifies these against its durable journal."
+        override val description = "Complete the current task using native independently observed tool receipts. Supply result; evidence_call_ids may be omitted or empty; opaque call IDs are selected automatically from the native journal."
         override val isReadOnly = false
         override val parametersSchema: JsonObject = buildJsonObject {
             put("type", "object")
@@ -211,7 +229,7 @@ class ObjectiveCoordinator(context: Context) {
                 }
                 putJsonObject("result") { put("type", "string") }
             }
-            putJsonArray("required") { add("evidence_call_ids"); add("result") }
+            putJsonArray("required") { add("result") }
         }
         override suspend fun execute(args: JsonObject, ctx: ToolContext): ToolResult {
             val sid = ctx.sessionId ?: return ToolResult(false, "Session unavailable")

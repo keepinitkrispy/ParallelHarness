@@ -573,6 +573,10 @@ class AgentEngine(
                 }
             }
 
+            if (coordinator?.status(sessionId) == "unverified") {
+                emit(AgentEvent.Error("Native coordinator could not verify completion after repeated attempts; receipts are preserved."))
+                break
+            }
             // Commit tool messages in the model's original call order.
             for (call in calls) {
                 val result = results.getValue(call.id)
