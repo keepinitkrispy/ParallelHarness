@@ -192,6 +192,7 @@ class AgentEngine(
     private val todoStore: TodoStore? = null,
     private val repoMap: com.androidharness.app.repomap.RepoMapCache? = null,
     private val cavemanSettings: suspend () -> com.androidharness.app.data.AppSettings = { com.androidharness.app.data.AppSettings() },
+    private val coordinator: ObjectiveCoordinator? = null,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -490,6 +491,13 @@ class AgentEngine(
                         working += ChatMessage(role = Role.USER, text = next)
                         continue
                     }
+                    val pendingObjective = if (mode == AgentMode.ACT) {
+                        coordinator?.onModelStop(sessionId, text.toString())
+                    } else null
+                    if (pendingObjective != null) {
+                        working += ChatMessage(role = Role.USER, text = pendingObjective)
+                        continue
+                    }
                     emit(AgentEvent.Finished(emptyAnswerReason(text.toString(), thinking.toString(), lastFinishReason)))
                     break
                 }
@@ -681,10 +689,19 @@ class AgentEngine(
         kotlin.coroutines.coroutineContext[TaskBudget]?.check()
         val ledger = kotlin.coroutines.coroutineContext[RecoveryLedger]
         val cached = if (registry.get(call.name)?.isReadOnly == false) ledger?.result(call) else null
-        val result = cached ?: performWithPermission(
-            call, mode, sessionAllowedTools, workspace, sessionId, turnId, agentMode,
-            requestOptions, config, apiKey, registry, resolveSubagentModel, emitEvent,
-        )
+        val result = if (cached != null) cached else {
+            // Mandatory native gate: every actual registered tool call crosses
+            // the durable task journal, regardless of model or permission mode.
+            val denied = coordinator?.before(sessionId, call.id, call.name, call.argumentsJson)
+            if (denied != null) ToolResult(false, denied) else {
+                val executed = performWithPermission(
+                    call, mode, sessionAllowedTools, workspace, sessionId, turnId, agentMode,
+                    requestOptions, config, apiKey, registry, resolveSubagentModel, emitEvent,
+                )
+                coordinator?.after(sessionId, call.id, executed)
+                executed
+            }
+        }
         kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
             emitEvent(AgentEvent.ToolMessageCommitted(ChatMessage(
                 role = Role.TOOL, text = result.output, toolCallId = call.id,
@@ -773,7 +790,7 @@ class AgentEngine(
             return runSubagent(
                 prompt, title, call.id, taskConfig, apiKey, workspace, requestOptions, emitEvent,
                 registry, mode, sessionAllowedTools, sessionId, turnId,
-                actionTools = agentMode == AgentMode.ACT && cavemanSettings().subagentFullAccess,
+                actionTools = agentMode == AgentMode.ACT && coordinator == null && cavemanSettings().subagentFullAccess,
             )
         }
 

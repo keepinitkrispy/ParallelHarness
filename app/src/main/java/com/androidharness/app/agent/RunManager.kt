@@ -56,6 +56,7 @@ class RunManager(
     /** MCP servers; tools are attached per run. Null in tests without MCP. */
     private val mcp: com.androidharness.app.tools.mcp.McpManager? = null,
     private val repoMap: com.androidharness.app.repomap.RepoMapCache? = null,
+    private val coordinator: ObjectiveCoordinator? = null,
 ) {
 
     val controls = TaskControlStore(java.io.File(context.filesDir, "task-controls"))
@@ -278,6 +279,9 @@ class RunManager(
         acquireKeepalive()
         RuntimeNotifier.update("Working…")
 
+        val nativeObjective = if (mode == AgentMode.ACT) {
+            coordinator?.begin(sid, turnId, record.initialPrompt, resume).orEmpty()
+        } else ""
         val history = with(sessions) {
             RunRecovery.context(messages(sid).withoutSubagentTurns(), record)
         }
@@ -337,10 +341,11 @@ class RunManager(
                     maxIterations = maxIterations,
                     // Connected MCP servers ride into this run; a failing
                     // server must never block the run itself.
-                    extraTools = runCatching { mcp?.activeTools(runWorkspace) }.getOrNull().orEmpty(),
+                    extraTools = runCatching { mcp?.activeTools(runWorkspace) }.getOrNull().orEmpty() +
+                        listOfNotNull(coordinator?.completionTool()),
                     resolveSubagentModel = modelResolver::resolve,
                     repoMapEnabled = repoMapOn,
-                    pinnedInstructions = record.pins,
+                    pinnedInstructions = listOf(record.pins, nativeObjective).filter { it.isNotBlank() }.joinToString("\n\n"),
                     takeQueued = { consumeQueued(sid, turnId) },
                     durableEvent = { event ->
                         if (event is AgentEvent.Usage) {
