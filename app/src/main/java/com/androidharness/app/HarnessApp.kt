@@ -137,6 +137,7 @@ class AppContainer(val appContext: Context) {
         searchApi = { searchApiConfig },
     )
     val mcp = com.androidharness.app.tools.mcp.McpManager(appContext, linuxEnv, keys, codeGraph)
+    val objectiveCoordinator = com.androidharness.app.agent.ObjectiveCoordinator(appContext)
     val engine = AgentEngine(
         providerFactory = { config -> ProviderFactory.create(config) },
         registry = registry,
@@ -148,6 +149,7 @@ class AppContainer(val appContext: Context) {
         todoStore = todoStore,
         repoMap = repoMap,
         cavemanSettings = { settings.settings.first().also { cavemanSettings.set(it); disabledSkills.set(it.disabledSkills) } },
+        coordinator = objectiveCoordinator,
     )
     val runManager = com.androidharness.app.agent.RunManager(
         context = appContext,
@@ -160,6 +162,7 @@ class AppContainer(val appContext: Context) {
         todoStore = todoStore,
         mcp = mcp,
         repoMap = repoMap,
+        coordinator = objectiveCoordinator,
     )
     val automation = com.androidharness.app.automation.AutomationManager(this)
     val terminal = com.androidharness.app.data.TerminalManager(appContext, linuxEnv, shizuku, runManager)
