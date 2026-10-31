@@ -107,15 +107,16 @@ class ObjectiveCoordinator(context: Context) {
                 "Do not claim completion from plans, model statements or unverified actions. " +
                 "Only direct conflicts with the goal or refusals need the owner. Do not ask for routine approval."
         }
-    suspend fun before(sessionId: String, callId: String, tool: String, arguments: String): String? =
+    suspend fun before(sessionId: String, callId: String, tool: String, arguments: String, isReadOnly: Boolean = false): String? =
         withContext(Dispatchers.IO) {
             synchronized(lock) {
-                val state = load(sessionId) ?: return@synchronized null
-                if (state.optString("status") == "paused") return@synchronized "Owner paused the task"
+                val state = load(sessionId) ?: return@synchronized "No active native execution objective; tool call blocked"
+                if (state.optString("status") != "running") return@synchronized "Objective is not running: " + state.optString("status")
                 state.getJSONArray("tools").put(JSONObject().apply {
                     put("id", callId)
                     put("name", tool)
                     put("args_hash", hash(arguments))
+                    put("read_only", isReadOnly)
                     put("started", System.currentTimeMillis())
                     put("status", "started")
                 })
@@ -159,7 +160,7 @@ class ObjectiveCoordinator(context: Context) {
                 return@withContext null
             }
             val nudges = state.optInt("nudges")
-            if (nudges >= 2) {
+            if (nudges >= 8) {
                 state.put("status", "unverified")
                 save(sessionId, state)
                 return@withContext null
@@ -186,6 +187,8 @@ class ObjectiveCoordinator(context: Context) {
             val events = state.getJSONArray("tools")
             val successful = mutableListOf<Pair<String, String>>()
             val inspected = mutableListOf<Pair<String, String>>()
+            var latestMutationIndex = -1
+            val verificationIndices = mutableListOf<Int>()
             for (i in 0 until events.length()) {
                 val event = events.optJSONObject(i) ?: continue
                 if (event.optString("status") != "succeeded") continue
@@ -193,18 +196,26 @@ class ObjectiveCoordinator(context: Context) {
                 if (name == "objective_finish") continue
                 val id = event.optString("id")
                 successful.add(id to name)
+                if (!event.optBoolean("read_only", false)) latestMutationIndex = i
                 val check = name.startsWith("read_") || name.startsWith("browser_get") ||
                     name.startsWith("browser_snapshot") || name.startsWith("git_status") ||
                     name.startsWith("git_diff") || name.startsWith("mcp__execution_lab__delegation_result")
-                if (check) inspected.add(id to event.optString("output_excerpt"))
+                if (check && event.optBoolean("read_only", false)) {
+                    inspected.add(id to event.optString("output_excerpt"))
+                    verificationIndices.add(i)
+                }
             }
             val successfulIds = successful.map { it.first }.toSet()
             if (result.isBlank() || successfulIds.isEmpty())
                 return@withContext ToolResult(false, "No independent successful execution evidence exists")
             val chosen = if (evidence.isNotEmpty() && evidence.all { it in successfulIds }) evidence
                          else successful.map { it.first }
-            if (state.optBoolean("action_task") && inspected.isEmpty())
-                return@withContext ToolResult(false, "Action needs a successful independent verification tool")
+            if (state.optBoolean("action_task")) {
+                if (latestMutationIndex < 0)
+                    return@withContext ToolResult(false, "Action has no successful native execution receipt")
+                if (verificationIndices.none { it > latestMutationIndex })
+                    return@withContext ToolResult(false, "Action requires independent read-back after its last successful modification")
+            }
             val exact = Regex("(?i)containing exactly\\s+([A-Za-z0-9_-]+)")
                 .find(state.optString("goal"))?.groupValues?.getOrNull(1)
             if (exact != null && inspected.none { it.second.contains(exact) })

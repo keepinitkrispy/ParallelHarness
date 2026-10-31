@@ -696,7 +696,7 @@ class AgentEngine(
         val result = if (cached != null) cached else {
             // Mandatory native gate: every actual registered tool call crosses
             // the durable task journal, regardless of model or permission mode.
-            val denied = coordinator?.before(sessionId, call.id, call.name, call.argumentsJson)
+            val denied = coordinator?.before(sessionId, call.id, call.name, call.argumentsJson, registry.get(call.name)?.isReadOnly == true)
             if (denied != null) ToolResult(false, denied) else {
                 val executed = performWithPermission(
                     call, mode, sessionAllowedTools, workspace, sessionId, turnId, agentMode,
@@ -915,7 +915,7 @@ class AgentEngine(
         val grantKey = com.androidharness.app.tools.ShellPolicy.grantKey(call.name, command)
         val isPkgInstall = call.name == "pkg_install"
         val approved = when {
-            isPkgInstall -> {
+            isPkgInstall && mode != PermissionMode.FULL_AUTO && mode != PermissionMode.FULL_ACCESS -> {
                 // Mandatory confirmation: even in FULL_ACCESS or FULL_AUTO mode,
                 // package installation ALWAYS requires explicit user confirmation (Decline or Allow).
                 val preview = if (workspace is com.androidharness.app.workspace.SshFs) "Install requested packages on the SSH host for ${workspace.root}." else computePkgInstallPreview(call)
@@ -1356,7 +1356,11 @@ class AgentEngine(
                 ) {
                     ToolResult(false, "${call.name} is not available to subagents.")
                 } else {
-                    val executed = if (actionTools) {
+                    // Nested workers cross the same persistent execution journal.
+                    val denied = coordinator?.before(sessionId, call.id, call.name, call.argumentsJson, tool.isReadOnly)
+                    val executed = if (denied != null) {
+                        ToolResult(false, denied)
+                    } else if (actionTools) {
                         performWithPermission(
                             call, permissionMode, sessionAllowedTools, workspace, sessionId, turnId,
                             AgentMode.ACT, requestOptions, config, apiKey, registry, null, emitEvent,
@@ -1371,6 +1375,7 @@ class AgentEngine(
                             ToolResult(false, e.message ?: "${call.name} failed").redacted()
                         }
                     }
+                    if (denied == null) coordinator?.after(sessionId, call.id, executed)
                     val elapsedMs = System.currentTimeMillis() - subStartedAt
                     if (executed.output.length < 100_000) {
                         val secs = elapsedMs / 1000.0

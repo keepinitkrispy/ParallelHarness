@@ -120,7 +120,14 @@ class MainActivity : FragmentActivity() {
                 val credentialScreen by container.screenshotPolicy.credentialScreenVisible
                     .collectAsStateWithLifecycle()
                 LaunchedEffect(currentSettings.allowScreenshots, credentialScreen) {
-                    if (ScreenshotPolicy.blocked(currentSettings.allowScreenshots, credentialScreen)) {
+                    // Owner-authorized headless automation captures the isolated virtual display.
+                    // The physical screen still follows the user's screenshot preference,
+                    // and secret-bearing screens stay protected on every display.
+                    val isolatedDisplay = window.decorView.display?.displayId
+                        ?.let { it != android.view.Display.DEFAULT_DISPLAY } == true
+                    val captureAllowed = !credentialScreen &&
+                        (currentSettings.allowScreenshots || isolatedDisplay)
+                    if (!captureAllowed) {
                         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
                     } else {
                         window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
