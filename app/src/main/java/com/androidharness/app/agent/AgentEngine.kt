@@ -257,7 +257,11 @@ class AgentEngine(
             working.clear()
             working.addAll(sanitized)
         }
-        val provider = providerFactory(config)
+        // Keep one controlling conversation even if a provider runs out of
+        // promotional credits. A live local Qwen can take over the same run.
+        var liveConfig = config
+        var liveApiKey = apiKey
+        var provider = providerFactory(config)
         // Stable per-session cache routing for providers that support it.
         val requestOptions = options.copy(cacheKey = sessionId)
         var iterations = 0
@@ -322,7 +326,7 @@ class AgentEngine(
             val estimate = estimateContext(working, requestSystemPrompt)
             emit(AgentEvent.EstimatedContext(estimate))
             if (estimate.total > (maxContextTokens * 0.8).toInt() && working.size > 6) {
-                val compacted = compact(provider, config, apiKey, working, maxContextTokens, sessionId) { emit(it) }
+                val compacted = compact(provider, liveConfig, liveApiKey, working, maxContextTokens, sessionId) { emit(it) }
                 if (compacted != null) {
                     working.clear()
                     working.addAll(compacted)
@@ -393,8 +397,8 @@ class AgentEngine(
                             AgentEvent.Usage(
                                 event.inputTokens, event.outputTokens,
                                 event.cachedInputTokens, event.cacheWriteTokens,
-                                config.model, config.name, cacheReported = event.cacheReported,
-                                cachePrices = com.androidharness.app.llm.ModelsDev.exactCachePrices(config.baseUrl, config.model),
+                                liveConfig.model, liveConfig.name, cacheReported = event.cacheReported,
+                                cachePrices = com.androidharness.app.llm.ModelsDev.exactCachePrices(liveConfig.baseUrl, liveConfig.model),
                             )
                         )
                     }
@@ -408,7 +412,7 @@ class AgentEngine(
             // re-emitting deltas the UI already showed would duplicate output.
             var failure = StreamRetrier.run(
                 streamFor = {
-                    provider.streamChat(config, apiKey, requestSystemPrompt, working, tools, requestOptions)
+                    provider.streamChat(liveConfig, liveApiKey, requestSystemPrompt, working, tools, requestOptions)
                 },
                 onAttemptStart = {
                     requestStartedNs = System.nanoTime()
@@ -434,7 +438,7 @@ class AgentEngine(
                 working.addAll(stripped)
                 failure = StreamRetrier.run(
                     streamFor = {
-                        provider.streamChat(config, apiKey, requestSystemPrompt, working, tools, requestOptions)
+                        provider.streamChat(liveConfig, liveApiKey, requestSystemPrompt, working, tools, requestOptions)
                     },
                     onAttemptStart = {
                         requestStartedNs = System.nanoTime()
@@ -451,6 +455,55 @@ class AgentEngine(
                     retryReason = { f -> f.take(200) },
                     emitEvent = { emit(it) },
                 )
+            }
+
+            // On provider quota exhaustion or transport failure, attempt a
+            // materially different route without creating a new conversation.
+            // Never switch after output/tools were emitted: that could replay
+            // actions or show contradictory partial answers. Qwen is optional
+            // and is queried only if the local server is actually listening.
+            if (failure != null && mode == AgentMode.ACT &&
+                liveConfig.id != com.androidharness.app.llm.ParallelDefaults.LOCAL_PROVIDER_ID &&
+                text.isBlank() && thinking.isBlank() && calls.isEmpty() &&
+                QwenRouteAdvisor.isAvailable()) {
+                val priorFailure = failure ?: "Provider unavailable"
+                val fallback = com.androidharness.app.llm.ParallelDefaults.localProvider
+                val candidateProvider = providerFactory(fallback)
+                val recoveryText = ChatMessage(role = Role.USER, text =
+                    "The previous model provider failed: " + priorFailure.take(300) +
+                    ". Continue the SAME user's objective, with the existing tools and constraints. " +
+                    "Inspect the current state, pursue another authorized route and verify actual completion.")
+                val fallbackMessages = working + recoveryText
+                val recovered = StreamRetrier.run(
+                    streamFor = {
+                        candidateProvider.streamChat(fallback, com.androidharness.app.llm.HarnessProvider.KEYLESS,
+                            requestSystemPrompt, fallbackMessages, tools, requestOptions)
+                    },
+                    onAttemptStart = {
+                        requestStartedNs = System.nanoTime()
+                        outputTokens = 0
+                        firstTokenNs = 0L
+                        lastTokenNs = 0L
+                        text = StringBuilder()
+                        thinking = StringBuilder()
+                        calls = mutableListOf()
+                        lastFinishReason = null
+                    },
+                    hasOutput = { text.isNotEmpty() || thinking.isNotEmpty() || calls.isNotEmpty() },
+                    handleEvent = streamEventHandler,
+                    retryReason = { f -> "Local Qwen fallback: " + f.take(150) },
+                    emitEvent = { emit(it) },
+                )
+                if (recovered == null) {
+                    liveConfig = fallback
+                    liveApiKey = com.androidharness.app.llm.HarnessProvider.KEYLESS
+                    provider = candidateProvider
+                    working += recoveryText
+                    failure = null
+                } else {
+                    failure = "Primary provider unavailable: " + priorFailure.take(220) +
+                        "; local Qwen fallback also failed: " + recovered.take(220)
+                }
             }
 
             // A turn that produced reasoning but no answer and no tool calls is
@@ -530,7 +583,7 @@ class AgentEngine(
                             android.util.Log.d("HarnessSpawn", "task ${call.id} START ${System.currentTimeMillis()}")
                             val result = executeWithPermission(
                                 call, effectiveMode, sessionAllowedTools, execWorkspace,
-                                sessionId, turnId, mode, requestOptions, config, apiKey,
+                                sessionId, turnId, mode, requestOptions, liveConfig, liveApiKey,
                                 runRegistry, resolveSubagentModel, serialEmit,
                             )
                             android.util.Log.d("HarnessSpawn", "task ${call.id} END ${System.currentTimeMillis()}")
@@ -556,7 +609,7 @@ class AgentEngine(
                             async {
                                 call.id to executeWithFailureGuard(
                                     call, deterministicFailures, effectiveMode, sessionAllowedTools, execWorkspace,
-                                    sessionId, turnId, mode, requestOptions, config, apiKey,
+                                    sessionId, turnId, mode, requestOptions, liveConfig, liveApiKey,
                                     runRegistry, resolveSubagentModel, serialEmit,
                                 )
                             }
@@ -567,7 +620,7 @@ class AgentEngine(
                     emit(AgentEvent.ToolStarted(first))
                     results[first.id] = executeWithFailureGuard(
                         first, deterministicFailures, effectiveMode, sessionAllowedTools, execWorkspace,
-                        sessionId, turnId, mode, requestOptions, config, apiKey,
+                        sessionId, turnId, mode, requestOptions, liveConfig, liveApiKey,
                         runRegistry, resolveSubagentModel,
                     ) { emit(it) }
                 }
