@@ -14,29 +14,33 @@ import java.net.URL
  * an alternative-route advisor, not a mechanism for bypassing unavailable
  * permissions, provider boundaries or independent verification.
  *
- * This becomes active when the owner runs the built-in local Qwen endpoint
- * (127.0.0.1:8080/v1). If Qwen is offline, the original objective and
- * native continuation still work without an invented answer.
+ * Inference runs on the trained Qwen3-VL-8B Kaggle GPU, accessed only
+ * through an authenticated Mac bridge/tunnel. The phone is never the model
+ * execution machine. If the session/bridge is offline, the original
+ * objective and native continuation remain intact.
  */
 internal object QwenRouteAdvisor {
-    private const val URL_TEXT = "http://127.0.0.1:8080/v1/chat/completions"
+    private val URL_TEXT = ParallelDefaults.GPU_BRIDGE + "/chat/completions"
 
     suspend fun isAvailable(): Boolean = withContext(Dispatchers.IO) {
         try {
-            val conn = URL("http://127.0.0.1:8080/health")
+            val conn = URL("http://127.0.0.1:18080/health")
                 .openConnection() as HttpURLConnection
             conn.connectTimeout = 450
             conn.readTimeout = 700
             try {
-                conn.responseCode == 200 &&
-                    JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
-                        .optString("status") == "ok"
+                if (conn.responseCode != 200) false else {
+                    val health = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+                    health.optString("status") == "ok" &&
+                        health.optString("model") == ParallelDefaults.LOCAL_MODEL &&
+                        health.optBoolean("trained_adapter_loaded", false)
+                }
             } finally { conn.disconnect() }
         } catch (_: Exception) { false }
     }
 
     /** Advisory intake only; the owner's objective is never rewritten by it. */
-    suspend fun classify(goal: String, facts: List<RealityArbitration.Observation>): String? = withContext(Dispatchers.IO) {
+    suspend fun auditPrimary(goal: String, primaryFrame: String, facts: List<RealityArbitration.Observation>): String? = withContext(Dispatchers.IO) {
         val payload = JSONObject().apply {
             put("model", ParallelDefaults.LOCAL_MODEL)
             put("stream", false)
@@ -45,14 +49,20 @@ internal object QwenRouteAdvisor {
             put("chat_template_kwargs", JSONObject().put("enable_thinking", false))
             put("messages", JSONArray().apply {
                 put(JSONObject().put("role", "system").put("content",
-                    "You are a NON-BINDING possibility hypothesis generator. " +
-                    "The user's literal objective and verified capability observations outrank your priors. " +
-                    "Do not infer motive, classify emotion, or narrow the goal. " +
-                    "Never exclude a route because it is unusual; unprobed is UNKNOWN, not impossible. " +
-                    "Return JSON: {\"frame\":\"literal objective and first actionable route\",\"route_claims\":[{\"route\":\"local_qwen\",\"status\":\"AVAILABLE_NOW\"}]}. " +
-                    "Only make route claims when there is evidence. Valid statuses AVAILABLE_NOW, UNAVAILABLE_NOW, UNKNOWN."))
+                    "You are a SECONDARY frame auditor, not a primary classifier or executive. " +
+                    "ChatGPT/Claude already proposed an interpretation or route. Audit THEIR claims, " +
+                    "against the user's literal objective and independent observations. " +
+                    "Extract only specific route claims made by the PRIMARY model; do not fabricate exclusions " +
+                    "or treat an unprobed route as impossible. An unusual route is NOT invalid. " +
+                    "Return JSON with a short 'frame' description of the primary proposal, " +
+                    "and 'route_claims' array of {route,status}, where status describes what the PRIMARY " +
+                    "MODEL asserts: AVAILABLE_NOW, UNAVAILABLE_NOW, or UNKNOWN. " +
+                    "Only name matching observed route IDs when truly supported; unknown routes stay unknown. " +
+                    "Do not authorize or refuse actions; reality and the owner's intent are authoritative."))
                 put(JSONObject().put("role", "user").put("content",
-                    "Literal request:\n" + goal.take(1100) +
+                    "Literal user objective:\n" + goal.take(1100) +
+                    "\nPrimary-model proposal (classify its stated assumptions, do not adopt them):\n" +
+                    primaryFrame.take(1500) +
                     "\nIndependently probed routes (limited scope; other routes remain UNKNOWN):\n" +
                     facts.joinToString("\n") { it.route + "=" + it.observed.name + " [" + it.source + "]" }.take(900)))
             })
