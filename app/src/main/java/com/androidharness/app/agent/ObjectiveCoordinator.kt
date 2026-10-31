@@ -51,12 +51,22 @@ class ObjectiveCoordinator(context: Context) {
         }
     }
     private fun actionIntent(text: String): Boolean {
-        val lower = text.trim().lowercase()
-        return listOf("build ", "fix ", "repair ", "implement ", "execute ", "deploy ",
-            "configure ", "connect ", "automate ", "install ", "launch ", "run ",
-            "create ", "make ", "send ", "book ", "publish ", "get it ", "get this ",
-            "do that", "do it", "finish ", "continue ", "resume ", "update ",
-            "integrate ", "get the ").any { lower.startsWith(it) }
+        // Conversational language drives actual work, not a command syntax.
+        val verbs = listOf("build", "fix", "repair", "implement", "execute", "deploy",
+            "configure", "connect", "automate", "install", "launch", "run", "create",
+            "make", "send", "book", "publish", "get it", "get this", "get the",
+            "finish", "continue", "resume", "update", "integrate", "start",
+            "check and fix", "do that", "do it")
+        var instruction = text.trim().lowercase()
+        val prefixes = listOf("please ", "can you ", "could you ", "would you ",
+            "will you ", "i want you to ", "i need you to ", "go ahead and ",
+            "you should ", "i'd like you to ")
+        repeat(3) {
+            prefixes.firstOrNull(instruction::startsWith)?.let {
+                instruction = instruction.removePrefix(it).trimStart()
+            }
+        }
+        return verbs.any { instruction == it || instruction.startsWith("$it ") }
     }
     private fun remoteContext(): Pair<String, String> {
         return try {
@@ -101,7 +111,7 @@ class ObjectiveCoordinator(context: Context) {
                 state.optString("goal") + "\nControlling objective: " +
                 state.optString("overarching", "Preserve the current user's literal request") +
                 "\n" + state.optString("operating_contract") +
-                "\nAct using native tools. Delegate independent reasoning silently when useful. " +
+                "\nThe native coordinator owns the objective, tool choices and verification. Claude is a passive reasoning source; never assign its model conversation executive authority. Keep working independently after the external ChatGPT conversation closes. Act using native tools. Delegate independent reasoning silently when useful. " +
                 "For action tasks, independently verify outcome using a tool and call objective_finish with " +
                 "actual successful tool-call ids and a concise result. The coordinator verifies receipts. " +
                 "Do not claim completion from plans, model statements or unverified actions. " +
@@ -112,6 +122,12 @@ class ObjectiveCoordinator(context: Context) {
             synchronized(lock) {
                 val state = load(sessionId) ?: return@synchronized "No active native execution objective; tool call blocked"
                 if (state.optString("status") != "running") return@synchronized "Objective is not running: " + state.optString("status")
+                // Real modifying tools require independent verification even if
+                // the user phrased the instruction as a question.
+                if (!isReadOnly && tool != "objective_finish" && tool != "task" &&
+                    !tool.startsWith("mcp__execution_lab__")) {
+                    state.put("action_task", true)
+                }
                 state.getJSONArray("tools").put(JSONObject().apply {
                     put("id", callId)
                     put("name", tool)
