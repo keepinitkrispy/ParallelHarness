@@ -264,5 +264,6 @@ class ObjectiveCoordinator(context: Context) {
             return complete(sid, evidence, args["result"]?.jsonPrimitive?.content.orEmpty())
         }
     }
+    fun completionRequired(sessionId: String): Boolean = load(sessionId)?.optBoolean("action_task") == true
     fun status(sessionId: String): String? = load(sessionId)?.optString("status")
 }
