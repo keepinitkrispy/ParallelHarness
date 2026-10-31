@@ -298,7 +298,15 @@ object ObjectivePolicy {
      * sent back as work.
      */
     fun onStop(reply: String, constraints: Set<Constraint>): StopVerdict? {
-        if (refusal.containsMatchIn(reply)) return StopVerdict.Allow("refused")
+        if (refusal.containsMatchIn(reply)) {
+            // A provider's refusal does not by itself establish that the
+            // owner's objective is impossible. Request a concrete alternate
+            // authorized route; genuine user-only steps still require the owner.
+            return StopVerdict.Nudge("The provider declined this approach. Retain the user's original " +
+                "objective; consult Qwen for alternative authorized routes, change the plan or tools, and " +
+                "execute a materially different route. Do not retry prohibited operations. " +
+                "Only a verified hard constraint or an actual owner-only dependency can stop execution.")
+        }
         if (blockerClaim.containsMatchIn(reply)) {
             return if (ownerAuthority(reply)) StopVerdict.Allow("blocked")
             else StopVerdict.Nudge("The stated blocker does not require the owner's authority (credentials, payment, consent, " +
