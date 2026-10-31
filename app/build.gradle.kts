@@ -14,8 +14,8 @@ android {
         applicationId = "dev.keepinitkrispy.parallel.rishbridge"
         minSdk = 26
         targetSdk = 36
-        versionCode = 9
-        versionName = "1.0.4"
+        versionCode = 10
+        versionName = "1.0.5"
         // Instrumented tests drive the real WebView (screenshots, history,
         // promise staging), which no JVM test can exercise.
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
