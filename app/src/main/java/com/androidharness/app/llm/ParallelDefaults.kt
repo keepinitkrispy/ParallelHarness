@@ -2,12 +2,15 @@ package com.androidharness.app.llm
 
 object ParallelDefaults {
     const val LOCAL_PROVIDER_ID = "parallel-local-qwen"
-    const val LOCAL_MODEL = "ggml-org/Qwen3-1.7B-GGUF:Q4_K_M"
+    // Legacy provider ID retained so prior preferences survive the upgrade.
+    // All inference is routed through the Mac bridge to the trained Kaggle GPU.
+    const val LOCAL_MODEL = "jwest33/qwen3-vl-8b-instruct-null-space-abliterated"
+    const val GPU_BRIDGE = "http://127.0.0.1:18080/v1"
     val localProvider = ProviderConfig(
         id = LOCAL_PROVIDER_ID,
-        name = "Local Qwen 1.7B",
+        name = "Qwen 8B + LoRA (Kaggle GPU)",
         type = ProviderType.OPENAI_COMPAT,
-        baseUrl = "http://127.0.0.1:8080/v1",
+        baseUrl = GPU_BRIDGE,
         model = LOCAL_MODEL,
     )
 }
