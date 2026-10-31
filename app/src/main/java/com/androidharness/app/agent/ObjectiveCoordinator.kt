@@ -170,9 +170,9 @@ class ObjectiveCoordinator(
                 }
             }
             val (objective, contract) = remoteContext()
-            // Observe known capabilities BEFORE inviting any model to propose a
-            // frame. We only check the concrete routes we can probe now: every
-            // other route remains UNKNOWN, never ruled out by typicality.
+            // Capture known capabilities independently of model classification.
+            // Actual primary reasoning and the Qwen secondary audit follow.
+            // Unprobed routes remain UNKNOWN, never ruled out by typicality.
             val facts = mutableListOf<RealityArbitration.Observation>()
             if (readLabState) {
                 val qwenReady = QwenRouteAdvisor.isAvailable()
@@ -180,7 +180,7 @@ class ObjectiveCoordinator(
                     "local_qwen",
                     if (qwenReady) RealityArbitration.Reachability.AVAILABLE_NOW
                     else RealityArbitration.Reachability.UNAVAILABLE_NOW,
-                    "127.0.0.1:8080/health (current health only)"))
+                    "GPU Mac bridge 127.0.0.1:18080/health (adapter identity checked)"))
             }
             val toolHistory = state.optJSONArray("tools") ?: JSONArray()
             for (i in (toolHistory.length() - 1) downTo maxOf(0, toolHistory.length() - 12)) {
@@ -199,19 +199,10 @@ class ObjectiveCoordinator(
                         "native tool-call journal, " + status + " (exact invocation; scope: this objective)"))
                 }
             }
-            // Qwen's assessment cannot authorize exclusions or rewrite the goal.
-            // An unavailable Qwen also must not terminate or block the task.
-            val qwenReady = facts.any { it.route == "local_qwen" &&
-                it.observed == RealityArbitration.Reachability.AVAILABLE_NOW }
-            val proposal = if (!resume && qwenReady && request.isNotBlank()) {
-                QwenRouteAdvisor.classify(state.optString("goal"), facts)
-            } else if (resume) state.optString("qwen_intake") else null
-            val arbitration = RealityArbitration.arbitrate(proposal, facts)
+            // The PRIMARY model classifies and reasons first. Qwen must not
+            // silently preclassify a request before ChatGPT/Claude has reasoned.
+            val arbitration = RealityArbitration.arbitrate(null, facts)
             state.put("reality_arbitration", arbitration.asJson())
-            if (proposal != null) {
-                state.put("qwen_intake", proposal.take(1400))
-                state.put("qwen_intake_at", System.currentTimeMillis())
-            }
             if (objective.isNotEmpty()) state.put("overarching", objective)
             if (contract.isNotEmpty()) state.put("operating_contract", contract)
             save(sessionId, state)
@@ -240,6 +231,55 @@ class ObjectiveCoordinator(
                 "Do not claim completion from plans, model statements or unverified actions. " +
                 "Only owner-authority blockers (credentials, payment, consent, physical action, permission grants) need the owner. Do not ask for routine approval."
         }
+    /**
+     * Runs AFTER a primary model proposes a frame or tool route, BEFORE its
+     * proposal can silently be treated as an established fact. Qwen is only
+     * an auditor. The actual journal observations have final factual weight;
+     * the literal owner objective remains authoritative. No model can veto
+     * otherwise authorized tool use merely by asserting impossibility.
+     */
+    suspend fun auditPrimaryFrame(
+        sessionId: String, primaryText: String, toolNames: List<String>,
+    ): String? = withContext(Dispatchers.IO) {
+        val state = load(sessionId) ?: return@withContext null
+        if (state.optString("status") != "running") return@withContext null
+        val turnId = state.optString("turn_id")
+        if (turnId.isBlank() || state.optString("last_frame_audited_turn") == turnId)
+            return@withContext null
+        val ownerGoal = state.optString("goal")
+        val raw = state.optJSONObject("reality_arbitration")?.optJSONArray("observations") ?: JSONArray()
+        val facts = (0 until raw.length()).mapNotNull { i ->
+            val value = raw.optJSONObject(i) ?: return@mapNotNull null
+            val status = runCatching {
+                RealityArbitration.Reachability.valueOf(value.optString("status"))
+            }.getOrNull() ?: return@mapNotNull null
+            RealityArbitration.Observation(value.optString("route"), status, value.optString("source"))
+        }
+        val primaryProposal = primaryText.take(1400) +
+            if (toolNames.isNotEmpty()) "\nProposed tools: " + toolNames.joinToString(", ").take(550) else ""
+        val qwenAudit = if (readLabState && QwenRouteAdvisor.isAvailable())
+            QwenRouteAdvisor.auditPrimary(ownerGoal, primaryProposal, facts)
+        else null
+        val decision = RealityArbitration.arbitrate(qwenAudit, facts)
+        state.put("last_primary_frame", primaryProposal.take(1800))
+        state.put("last_frame_audited_turn", turnId)
+        state.put("last_frame_arbitration", decision.asJson())
+        val history = state.optJSONArray("frame_arbitrations") ?: JSONArray()
+        history.put(JSONObject().apply {
+            put("time", System.currentTimeMillis())
+            put("turn_id", turnId)
+            put("primary_sha256", hash(primaryProposal))
+            put("qwen_audit", qwenAudit?.take(1800) ?: "unavailable")
+            put("result", decision.asJson())
+        })
+        while (history.length() > 24) history.remove(0)
+        state.put("frame_arbitrations", history)
+        save(sessionId, state)
+        if (decision.divergences.isNotEmpty() || decision.unverifiedExclusions.isNotEmpty())
+            decision.instructions()
+        else null
+    }
+
     suspend fun before(sessionId: String, callId: String, tool: String, arguments: String, isReadOnly: Boolean = false): String? =
         withContext(Dispatchers.IO) {
             synchronized(lock) {
