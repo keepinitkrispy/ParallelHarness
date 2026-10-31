@@ -56,6 +56,9 @@ class NativeObjectiveRecoveryWorker(
 
     override suspend fun doWork(): Result {
         val c = (applicationContext as? HarnessApp)?.container ?: return Result.retry()
+        // Keep Termux-backed execution and Claude delegation available without
+        // a remote ChatGPT controller. Failure is nonfatal for local-only jobs.
+        LocalServicesSupervisor.ensureStarted(applicationContext)
         val controls = c.runManager.controls
         val interrupted = controls.interruptedSessionIds()
         if (interrupted.isEmpty()) return Result.success()
