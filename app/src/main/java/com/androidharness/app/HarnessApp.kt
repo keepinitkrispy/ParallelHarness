@@ -39,6 +39,8 @@ class HarnessApp : Application() {
         ComposeFoundationFlags.isPausableCompositionInPrefetchEnabled = false
         WebView.enableSlowWholeDocumentDraw()
         container = AppContainer(this)
+        // The app owns recovery independently of this ChatGPT conversation.
+        com.androidharness.app.agent.NativeObjectiveRecoveryWorker.schedule(this)
     }
 }
 

@@ -75,6 +75,15 @@ class TaskControlStore(private val directory: File) {
         flow.value = next
         return next
     }
+    /** WorkManager recovery sees only crashed tasks; owner-paused and completed work is excluded. */
+    @Synchronized fun interruptedSessionIds(): List<String> =
+        directory.listFiles()?.asSequence().orEmpty()
+            .filter { it.isFile && it.name.endsWith(".json") }
+            .map { it.name.removeSuffix(".json") }
+            .filter { it.matches(Regex("[a-zA-Z0-9-]+")) }
+            .filter { flow(it).value.status == "interrupted" }
+            .toList()
+
     private fun file(id: String): File {
         require(id.matches(Regex("[a-zA-Z0-9-]+")))
         return File(directory, "$id.json")
