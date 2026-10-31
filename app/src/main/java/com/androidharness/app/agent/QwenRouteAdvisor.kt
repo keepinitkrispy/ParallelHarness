@@ -99,7 +99,7 @@ internal object QwenRouteAdvisor {
             return try {
                 val conn = URL(URL_TEXT).openConnection() as HttpURLConnection
                 conn.connectTimeout = 800
-                conn.readTimeout = 12_000
+                conn.readTimeout = 175_000
                 conn.requestMethod = "POST"
                 conn.setRequestProperty("Content-Type", "application/json")
                 conn.doOutput = true
