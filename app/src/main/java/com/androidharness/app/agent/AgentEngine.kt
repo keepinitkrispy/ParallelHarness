@@ -477,7 +477,7 @@ class AgentEngine(
                 val recovered = StreamRetrier.run(
                     streamFor = {
                         candidateProvider.streamChat(fallback, com.androidharness.app.llm.HarnessProvider.KEYLESS,
-                            requestSystemPrompt, fallbackMessages, tools, requestOptions)
+                            requestSystemPrompt + "\n/no_think", fallbackMessages, tools, requestOptions)
                     },
                     onAttemptStart = {
                         requestStartedNs = System.nanoTime()
