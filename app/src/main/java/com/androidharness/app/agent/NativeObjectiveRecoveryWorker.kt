@@ -50,7 +50,7 @@ class NativeObjectiveRecoveryWorker(
             title = title,
             ok = false,
             summary = reason,
-            notificationTitle = "ParallelHarness task needs attention",
+            notificationTitle = "PPHarness task needs attention",
         ))
     }
 
@@ -116,7 +116,7 @@ class NativeObjectiveRecoveryWorker(
                 NotificationManager.IMPORTANCE_LOW))
         val notice = Notification.Builder(applicationContext, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_popup_sync)
-            .setContentTitle("ParallelHarness")
+            .setContentTitle("PPHarness")
             .setContentText("Continuing an interrupted objective")
             .setOngoing(true)
             .build()
