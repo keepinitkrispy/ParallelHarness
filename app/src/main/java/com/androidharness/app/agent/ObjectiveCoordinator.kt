@@ -170,6 +170,48 @@ class ObjectiveCoordinator(
                 }
             }
             val (objective, contract) = remoteContext()
+            // Observe known capabilities BEFORE inviting any model to propose a
+            // frame. We only check the concrete routes we can probe now: every
+            // other route remains UNKNOWN, never ruled out by typicality.
+            val facts = mutableListOf<RealityArbitration.Observation>()
+            if (readLabState) {
+                val qwenReady = QwenRouteAdvisor.isAvailable()
+                facts.add(RealityArbitration.Observation(
+                    "local_qwen",
+                    if (qwenReady) RealityArbitration.Reachability.AVAILABLE_NOW
+                    else RealityArbitration.Reachability.UNAVAILABLE_NOW,
+                    "127.0.0.1:8080/health (current health only)"))
+            }
+            val toolHistory = state.optJSONArray("tools") ?: JSONArray()
+            for (i in (toolHistory.length() - 1) downTo maxOf(0, toolHistory.length() - 12)) {
+                val entry = toolHistory.optJSONObject(i) ?: continue
+                val status = entry.optString("status")
+                if (status == "succeeded" || status == "denied") {
+                    // A denial belongs to the exact attempted operation,
+                    // never the whole tool: another argument can be authorized.
+                    val route = "tool:" + entry.optString("name").lowercase() +
+                        if (status == "denied") ":" + entry.optString("args_hash").take(16)
+                        else ""
+                    facts.add(RealityArbitration.Observation(
+                        route,
+                        if (status == "succeeded") RealityArbitration.Reachability.AVAILABLE_NOW
+                        else RealityArbitration.Reachability.UNAVAILABLE_NOW,
+                        "native tool-call journal, " + status + " (exact invocation; scope: this objective)"))
+                }
+            }
+            // Qwen's assessment cannot authorize exclusions or rewrite the goal.
+            // An unavailable Qwen also must not terminate or block the task.
+            val qwenReady = facts.any { it.route == "local_qwen" &&
+                it.observed == RealityArbitration.Reachability.AVAILABLE_NOW }
+            val proposal = if (!resume && qwenReady && request.isNotBlank()) {
+                QwenRouteAdvisor.classify(state.optString("goal"), facts)
+            } else if (resume) state.optString("qwen_intake") else null
+            val arbitration = RealityArbitration.arbitrate(proposal, facts)
+            state.put("reality_arbitration", arbitration.asJson())
+            if (proposal != null) {
+                state.put("qwen_intake", proposal.take(1400))
+                state.put("qwen_intake_at", System.currentTimeMillis())
+            }
             if (objective.isNotEmpty()) state.put("overarching", objective)
             if (contract.isNotEmpty()) state.put("operating_contract", contract)
             save(sessionId, state)
@@ -191,6 +233,7 @@ class ObjectiveCoordinator(
                 state.optString("goal") + "\nControlling objective: " +
                 state.optString("overarching", "Preserve the owner's literal request") +
                 "\n" + state.optString("operating_contract") + enforced +
+                arbitration.instructions() +
                 "\nThe native coordinator owns the objective, tool choices and verification. Claude is a passive reasoning source; never assign its model conversation executive authority. Keep working independently after the external ChatGPT conversation closes. Act using native tools. Delegate independent reasoning silently when useful. " +
                 "For action tasks, independently verify outcome using a tool and call objective_finish with " +
                 "a concise result; native receipts supply the evidence. " +
