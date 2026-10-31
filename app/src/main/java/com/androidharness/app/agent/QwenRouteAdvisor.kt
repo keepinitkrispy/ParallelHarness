@@ -36,14 +36,16 @@ internal object QwenRouteAdvisor {
                 put("model", ParallelDefaults.LOCAL_MODEL)
                 put("stream", false)
                 put("temperature", 0.25)
-                put("max_tokens", 450)
+                put("max_tokens", 280)
+                put("chat_template_kwargs", JSONObject().put("enable_thinking", false))
                 put("messages", JSONArray().apply {
                     put(JSONObject().put("role", "system").put("content",
                         "You are the user's local alternative-route analyst. Preserve the literal objective. " +
                         "Consider changing tool, interface, machine, architecture or sequence. " +
                         "Never invent successful executions, access, credentials, permission, or results. " +
                         "Do not advise bypassing a hard authorization boundary. " +
-                        "Give a concise feasible NEXT ACTION, its dependencies, and a way to verify it."))
+                        "Give a concise feasible NEXT ACTION, its dependencies, and a way to verify it. " +
+                        "Prefer a materially different working capability over waiting or retrying the same exhausted provider."))
                     put(JSONObject().put("role", "user").put("content",
                         "Original objective:\n" + goal.take(2800) +
                         "\nPrevious attempt or refusal:\n" + failure.take(1100) +
