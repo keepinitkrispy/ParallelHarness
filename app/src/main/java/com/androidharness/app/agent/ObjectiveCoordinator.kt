@@ -273,8 +273,19 @@ class ObjectiveCoordinator(
             val unmet = ObjectivePolicy.unmet(specOf(state), journalOf(state), "pending")
             state.put("last_unmet", unmet.joinToString("; "))
             save(sessionId, state)
+            val advice = QwenRouteAdvisor.suggest(state.optString("goal"), response, unmet)
+            if (advice != null) {
+                state.put("last_qwen_route", advice.take(1800))
+                state.put("last_qwen_consulted", System.currentTimeMillis())
+                save(sessionId, state)
+            }
             val lead = (verdict as? ObjectivePolicy.StopVerdict.Nudge)?.message?.plus("\n").orEmpty()
-            lead + if (unmet.isNotEmpty()) {
+            val route = if (advice != null) {
+                "Local Qwen alternate-route proposal (not permission or proof of execution):\n" + advice + "\n"
+            } else {
+                "Qwen route advisor is currently offline. Keep pursuing another available route; do not treat that as the owner's task being finished.\n"
+            }
+            lead + route + if (unmet.isNotEmpty()) {
                 "The owner's objective is not complete. Unmet, from the native journal:\n- " + unmet.joinToString("\n- ") +
                 "\nContinue working on the original objective with tools now. A plan, explanation or substitute task does not complete it."
             } else {
