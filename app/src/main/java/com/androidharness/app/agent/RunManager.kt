@@ -367,7 +367,18 @@ class RunManager(
                         }
                     },
                 ).collect { }
-                completed = live.value.error == null
+                // A model's last message is not evidence that requested work finished.
+                val verificationRequired = mode == AgentMode.ACT &&
+                    coordinator?.completionRequired(sid) == true
+                val coordinatorState = coordinator?.status(sid)
+                completed = live.value.error == null &&
+                    (!verificationRequired || coordinatorState == "completed")
+                if (!completed && live.value.error == null && verificationRequired) {
+                    controls.update(sid) {
+                        it.copy(reason = "Objective not verified (native coordinator: " +
+                            (coordinatorState ?: "unavailable") + ")")
+                    }
+                }
             } catch (paused: TaskPaused) {
                 controls.update(sid) { it.copy(reason = paused.reasonText) }
             } catch (ce: CancellationException) {
