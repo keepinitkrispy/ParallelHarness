@@ -152,6 +152,23 @@ class ObjectiveEnforcementTest {
         assertEquals("blocked", coordinator.status(sid))
     }
 
+    @Test fun primaryReasoningComesBeforeOptionalQwenArbitration() = runBlocking {
+        val sid = "primary-first"
+        val ctx = coordinator.begin(sid, "t1", "Inspect the connected Mac; do not assume it is unavailable.", false)
+        assertTrue(ctx.contains("Governing objective"))
+        assertTrue(ctx.contains("No concrete routes probed yet"))
+        val stateBefore = dir.listFiles()!!.single { it.extension == "json" }.readText()
+        assertFalse("Qwen must not pre-classify before the primary model", stateBefore.contains("last_primary_frame"))
+        // Offline Qwen is not a gate. The primary model's frame is recorded
+        // for inspection rather than silently becoming the owner's objective.
+        coordinator.auditPrimaryFrame(sid, "The Mac is probably inaccessible.", listOf("env_status"))
+        val stateAfter = dir.listFiles()!!.single { it.extension == "json" }.readText()
+        assertTrue(stateAfter.contains("last_primary_frame"))
+        assertTrue(stateAfter.contains("frame_arbitrations"))
+        assertTrue(stateAfter.contains("Inspect the connected Mac"))
+        assertEquals("running", coordinator.status(sid))
+    }
+
     @Test fun providerRefusalDoesNotTerminateTheOwnerObjective() = runBlocking {
         val sid = "route-after-refusal"
         coordinator.begin(sid, "t1", "Build and test PPHarness on my Pixel 6; use the available alternate routes.", resume = false)
