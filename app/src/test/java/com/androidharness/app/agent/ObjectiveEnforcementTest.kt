@@ -152,6 +152,24 @@ class ObjectiveEnforcementTest {
         assertEquals("blocked", coordinator.status(sid))
     }
 
+    @Test fun providerRefusalDoesNotTerminateTheOwnerObjective() = runBlocking {
+        val sid = "route-after-refusal"
+        coordinator.begin(sid, "t1", "Build and test PPHarness on my Pixel 6; use the available alternate routes.", resume = false)
+        val result = coordinator.onModelStop(sid, "I refuse to build the app. I will not continue.")
+        assertNotNull("A provider refusal must trigger alternate-route analysis", result)
+        assertTrue(result!!, result.contains("alternative authorized routes"))
+        assertEquals("running", coordinator.status(sid))
+    }
+
+    @Test fun ownerOnlyApprovalRemainsAnActualBlocker() = runBlocking {
+        val sid = "owner-only"
+        coordinator.begin(sid, "t1", "Install PPHarness on my phone and test it.", resume = false)
+        val result = coordinator.onModelStop(sid,
+            "Blocked: the phone requires your physical approval of its USB debugging permission dialog.")
+        assertNull(result)
+        assertEquals("blocked", coordinator.status(sid))
+    }
+
     @Test fun policyParsesTheOwnersInstruction() {
         val c = ObjectivePolicy.constraints(owner)
         assertTrue(ObjectivePolicy.Constraint.EXISTING_FIRST in c)
