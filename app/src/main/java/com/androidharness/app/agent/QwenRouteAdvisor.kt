@@ -6,6 +6,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
+import java.net.URLEncoder
 import java.net.URL
 
 /**
@@ -37,6 +38,56 @@ internal object QwenRouteAdvisor {
                 }
             } finally { conn.disconnect() }
         } catch (_: Exception) { false }
+    }
+
+    /** Persist a specific primary-model audit even when Kaggle is down. */
+    suspend fun enqueueAudit(
+        conversationId: String, turnId: String, goal: String,
+        proposal: String, facts: List<RealityArbitration.Observation>,
+    ): JSONObject? = withContext(Dispatchers.IO) {
+        val payload = JSONObject().apply {
+            put("conversation_id", conversationId)
+            put("turn_id", turnId)
+            put("literal_objective", goal)
+            put("primary_proposal", proposal)
+            put("observations", JSONArray(facts.map { fact ->
+                JSONObject().put("route", fact.route)
+                    .put("status", fact.observed.name).put("source", fact.source)
+            }))
+            // The model cannot change the objective. Native user amendments
+            // remain journaled and require explicit owner authority.
+            put("owner_edit", true)
+        }
+        try {
+            val conn = URL("http://127.0.0.1:18080/audit/enqueue")
+                .openConnection() as HttpURLConnection
+            conn.connectTimeout = 650
+            conn.readTimeout = 1400
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.doOutput = true
+            try {
+                conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+                if (conn.responseCode != 202) null
+                else JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+                    .optJSONObject("audit")
+            } finally { conn.disconnect() }
+        } catch (_: Exception) { null }
+    }
+
+    suspend fun deferredResults(conversationId: String): JSONArray? = withContext(Dispatchers.IO) {
+        try {
+            val encoded = URLEncoder.encode(conversationId, "UTF-8")
+            val conn = URL("http://127.0.0.1:18080/audit/results?conversation_id=$encoded")
+                .openConnection() as HttpURLConnection
+            conn.connectTimeout = 650
+            conn.readTimeout = 1400
+            try {
+                if (conn.responseCode != 200) null
+                else JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+                    .optJSONArray("jobs")
+            } finally { conn.disconnect() }
+        } catch (_: Exception) { null }
     }
 
     /** Advisory intake only; the owner's objective is never rewritten by it. */
