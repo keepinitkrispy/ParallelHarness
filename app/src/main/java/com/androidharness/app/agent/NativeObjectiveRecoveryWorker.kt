@@ -16,6 +16,8 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.androidharness.app.HarnessApp
+import com.androidharness.app.RunResultNotification
+import com.androidharness.app.RunResultNotifications
 import com.androidharness.app.llm.HarnessProvider
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
@@ -40,6 +42,18 @@ class NativeObjectiveRecoveryWorker(
     params: WorkerParameters,
 ) : CoroutineWorker(context, params) {
 
+    private suspend fun alertBlocked(sessionId: String, reason: String) {
+        val c = (applicationContext as? HarnessApp)?.container ?: return
+        val title = c.sessions.session(sessionId)?.title ?: "Autonomous task"
+        RunResultNotifications.post(applicationContext, RunResultNotification(
+            sessionId = sessionId,
+            title = title,
+            ok = false,
+            summary = reason,
+            notificationTitle = "ParallelHarness task needs attention",
+        ))
+    }
+
     override suspend fun doWork(): Result {
         val c = (applicationContext as? HarnessApp)?.container ?: return Result.retry()
         val controls = c.runManager.controls
@@ -54,17 +68,17 @@ class NativeObjectiveRecoveryWorker(
             if (record.status != "interrupted" || record.mode != AgentMode.ACT.name) continue
             val provider = record.provider
             if (provider == null) {
-                controls.update(sessionId) {
-                    it.copy(status = "paused", reason = "Saved model provider is unavailable")
-                }
+                val reason = "Saved model provider is unavailable"
+                controls.update(sessionId) { it.copy(status = "paused", reason = reason) }
+                alertBlocked(sessionId, reason)
                 continue
             }
             val key = if (provider.id == HarnessProvider.ID) c.providers.harnessApiKey()
                 else c.providers.apiKey(provider.id)
             if (key.isNullOrBlank()) {
-                controls.update(sessionId) {
-                    it.copy(status = "paused", reason = "Saved model credentials are unavailable")
-                }
+                val reason = "Saved model credentials are unavailable"
+                controls.update(sessionId) { it.copy(status = "paused", reason = reason) }
+                alertBlocked(sessionId, reason)
                 continue
             }
             try {
@@ -81,10 +95,9 @@ class NativeObjectiveRecoveryWorker(
                 throw cancelled
             } catch (e: Exception) {
                 if (runAttemptCount >= 2) {
-                    controls.update(sessionId) {
-                        it.copy(status = "paused",
-                            reason = "Automatic resume failed: " + (e.message ?: "unknown").take(200))
-                    }
+                    val reason = "Automatic resume failed: " + (e.message ?: "unknown").take(200)
+                    controls.update(sessionId) { it.copy(status = "paused", reason = reason) }
+                    alertBlocked(sessionId, reason)
                 } else {
                     return Result.retry()
                 }
