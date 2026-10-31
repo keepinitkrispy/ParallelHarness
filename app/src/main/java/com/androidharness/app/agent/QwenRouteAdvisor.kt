@@ -23,11 +23,41 @@ internal object QwenRouteAdvisor {
 
     suspend fun isAvailable(): Boolean = withContext(Dispatchers.IO) {
         try {
-            java.net.Socket().use { socket ->
-                socket.connect(java.net.InetSocketAddress("127.0.0.1", 8080), 500)
-            }
-            true
+            val conn = URL("http://127.0.0.1:8080/health")
+                .openConnection() as HttpURLConnection
+            conn.connectTimeout = 450
+            conn.readTimeout = 700
+            try {
+                conn.responseCode == 200 &&
+                    JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+                        .optString("status") == "ok"
+            } finally { conn.disconnect() }
         } catch (_: Exception) { false }
+    }
+
+    /** Advisory intake only; the owner's objective is never rewritten by it. */
+    suspend fun classify(goal: String, facts: List<RealityArbitration.Observation>): String? = withContext(Dispatchers.IO) {
+        val payload = JSONObject().apply {
+            put("model", ParallelDefaults.LOCAL_MODEL)
+            put("stream", false)
+            put("temperature", 0.1)
+            put("max_tokens", 210)
+            put("chat_template_kwargs", JSONObject().put("enable_thinking", false))
+            put("messages", JSONArray().apply {
+                put(JSONObject().put("role", "system").put("content",
+                    "You are a NON-BINDING possibility hypothesis generator. " +
+                    "The user's literal objective and verified capability observations outrank your priors. " +
+                    "Do not infer motive, classify emotion, or narrow the goal. " +
+                    "Never exclude a route because it is unusual; unprobed is UNKNOWN, not impossible. " +
+                    "Return JSON: {\"frame\":\"literal objective and first actionable route\",\"route_claims\":[{\"route\":\"local_qwen\",\"status\":\"AVAILABLE_NOW\"}]}. " +
+                    "Only make route claims when there is evidence. Valid statuses AVAILABLE_NOW, UNAVAILABLE_NOW, UNKNOWN."))
+                put(JSONObject().put("role", "user").put("content",
+                    "Literal request:\n" + goal.take(1100) +
+                    "\nIndependently probed routes (limited scope; other routes remain UNKNOWN):\n" +
+                    facts.joinToString("\n") { it.route + "=" + it.observed.name + " [" + it.source + "]" }.take(900)))
+            })
+        }
+        complete(payload)
     }
 
     suspend fun suggest(goal: String, failure: String, unmet: List<String>): String? =
@@ -52,6 +82,10 @@ internal object QwenRouteAdvisor {
                         "\nUnmet criteria:\n" + unmet.joinToString("; ").take(1200)))
                 })
             }
+            complete(requestBody)
+        }
+
+    private fun complete(requestBody: JSONObject): String? {
             try {
                 val conn = URL(URL_TEXT).openConnection() as HttpURLConnection
                 conn.connectTimeout = 800
@@ -61,7 +95,7 @@ internal object QwenRouteAdvisor {
                 conn.doOutput = true
                 try {
                     conn.outputStream.use { it.write(requestBody.toString().toByteArray(Charsets.UTF_8)) }
-                    if (conn.responseCode !in 200..299) return@withContext null
+                    if (conn.responseCode !in 200..299) return null
                     val reply = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
                     reply.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")
                         ?.optString("content")?.trim()?.takeIf { it.isNotBlank() }?.take(1800)
@@ -71,5 +105,5 @@ internal object QwenRouteAdvisor {
             } catch (_: Exception) {
                 null // Offline local model is a route failure, not objective completion.
             }
-        }
+    }
 }
