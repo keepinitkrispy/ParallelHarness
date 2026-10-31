@@ -96,7 +96,7 @@ internal object QwenRouteAdvisor {
         }
 
     private fun complete(requestBody: JSONObject): String? {
-            try {
+            return try {
                 val conn = URL(URL_TEXT).openConnection() as HttpURLConnection
                 conn.connectTimeout = 800
                 conn.readTimeout = 12_000
