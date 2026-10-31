@@ -506,6 +506,15 @@ class AgentEngine(
                 }
             }
 
+            // Primary ChatGPT/Claude reasoning is produced first. Only then
+            // can Qwen audit its frame against the native observation journal.
+            // Neither Qwen nor a typical-case assumption may override the
+            // owner's literal goal or authorize/deny concrete operations.
+            val frameWarning = if (failure == null && mode == AgentMode.ACT &&
+                (text.isNotBlank() || calls.isNotEmpty())) {
+                coordinator?.auditPrimaryFrame(sessionId, text.toString(), calls.map { it.name })
+            } else null
+
             // A turn that produced reasoning but no answer and no tool calls is
             // NOT committed: replaying an empty assistant message would hand
             // Anthropic an empty content array (a 400) and teaches the model
@@ -547,8 +556,9 @@ class AgentEngine(
                     val pendingObjective = if (mode == AgentMode.ACT) {
                         coordinator?.onModelStop(sessionId, text.toString())
                     } else null
-                    if (pendingObjective != null) {
-                        working += ChatMessage(role = Role.USER, text = pendingObjective)
+                    if (pendingObjective != null || frameWarning != null) {
+                        val correction = listOfNotNull(pendingObjective, frameWarning).joinToString("\n")
+                        working += ChatMessage(role = Role.USER, text = correction)
                         continue
                     }
                     emit(AgentEvent.Finished(emptyAnswerReason(text.toString(), thinking.toString(), lastFinishReason)))
@@ -643,6 +653,12 @@ class AgentEngine(
                 )
                 working += toolMessage.withImagesResolved()
                 emit(AgentEvent.ToolFinished(call.id, result))
+            }
+            // Reconcile competing model frames after all tool replies, not in
+            // the middle of an assistant tool-call/response sequence.
+            if (frameWarning != null) {
+                working += ChatMessage(role = Role.USER, text =
+                    "Primary-model interpretation needs evidence reconciliation. " + frameWarning)
             }
         }
     }
