@@ -18,7 +18,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
       - uses: gradle/actions/setup-gradle@v4
       - name: Compile Kotlin and assemble isolated release candidate
         run: |
