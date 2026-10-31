@@ -1,0 +1,74 @@
+name: Qwen 8B no-adapter baseline (cloud CPU)
+on:
+  push:
+    branches:
+      - experiment/qwen8b-baseline-cpu-20261031
+    paths:
+      - 'benchmarks/qwen8b_baseline_cpu.py'
+      - '.github/workflows/qwen8b-baseline-cpu.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  no-adapter-baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect independent runner resource limits
+        run: |
+          free -h
+          df -h .
+          nproc
+      - name: Compile llama.cpp CPU runtime
+        run: |
+          git clone --depth 1 https://github.com/ggml-org/llama.cpp.git /tmp/llama.cpp
+          cmake -S /tmp/llama.cpp -B /tmp/llama.cpp/build \
+            -DGGML_CUDA=OFF -DGGML_NATIVE=OFF -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/llama.cpp/build --config Release -j 4 --target llama-server
+      - name: Download and SHA-verify exact abliterated base (no adapter)
+        run: |
+          mkdir -p /tmp/qwen
+          curl -fL --retry 3 --retry-delay 6 --connect-timeout 30 \
+            'https://huggingface.co/jwest33/qwen3-vl-8b-instruct-null-space-abliterated-GGUF/resolve/main/qwen3-vl-8b-instruct-null-space-abliterated-q4_k_m.gguf' \
+            -o /tmp/qwen/base_q4.gguf
+          echo '4f4d298e2e3feeef2ef294c957d6a86e28a24f4e4ba88d3af48fd301c00380c1  /tmp/qwen/base_q4.gguf' | sha256sum -c -
+          ls -lh /tmp/qwen/base_q4.gguf
+      - name: Start original base model server and verify health
+        run: |
+          /tmp/llama.cpp/build/bin/llama-server \
+            -m /tmp/qwen/base_q4.gguf \
+            --host 127.0.0.1 --port 18081 \
+            --ctx-size 2048 --parallel 1 --threads 4 \
+            --n-gpu-layers 0 --jinja > /tmp/qwen/server.log 2>&1 &
+          echo $! >/tmp/qwen/server.pid
+          for i in $(seq 1 150); do
+            if curl -fsS --max-time 2 http://127.0.0.1:18081/health | grep -q 'ok'; then
+              echo "BASE_MODEL_HEALTH_CHECK_PASSED"
+              exit 0
+            fi
+            if ! kill -0 "$(cat /tmp/qwen/server.pid)" 2>/dev/null; then
+              tail -80 /tmp/qwen/server.log
+              exit 1
+            fi
+            sleep 2
+          done
+          tail -80 /tmp/qwen/server.log
+          exit 1
+      - name: Run no-adapter baseline on same conformance cases
+        run: |
+          python3 -u benchmarks/qwen8b_baseline_cpu.py | tee baseline_test.log
+      - name: Preserve eval results and runtime logs even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen8b-no-adapter-cpu-baseline
+          path: |
+            baseline_results/
+            baseline_test.log
+            /tmp/qwen/server.log
+          if-no-files-found: warn
+          retention-days: 30
