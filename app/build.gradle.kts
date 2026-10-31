@@ -14,8 +14,8 @@ android {
         applicationId = "dev.keepinitkrispy.parallel.rishbridge"
         minSdk = 26
         targetSdk = 36
-        versionCode = 8
-        versionName = "1.0.3"
+        versionCode = 9
+        versionName = "1.0.4"
         // Instrumented tests drive the real WebView (screenshots, history,
         // promise staging), which no JVM test can exercise.
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -148,6 +148,8 @@ dependencies {
     implementation(libs.sora.editor)
 
     testImplementation(libs.junit)
+    // Real org.json so ObjectiveCoordinator journals run on the JVM, not android.jar stubs.
+    testImplementation("org.json:json:20240303")
 
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.core)

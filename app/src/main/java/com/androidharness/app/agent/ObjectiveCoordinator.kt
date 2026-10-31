@@ -1,6 +1,7 @@
 package com.androidharness.app.agent
 
 import android.content.Context
+import com.androidharness.app.tools.SecretRedactor
 import com.androidharness.app.tools.Tool
 import com.androidharness.app.tools.ToolContext
 import com.androidharness.app.tools.ToolResult
@@ -27,8 +28,12 @@ import java.util.concurrent.ConcurrentHashMap
  * outside of model text, and verifies successful tool outcomes before finish.
  * This component is present even when the local MCP/lab service is down.
  */
-class ObjectiveCoordinator(context: Context) {
-    private val folder = File(context.filesDir, "objective-coordinator").apply { mkdirs() }
+class ObjectiveCoordinator(
+    private val folder: File,
+    private val readLabState: Boolean = true,
+) {
+    constructor(context: Context) : this(File(context.filesDir, "objective-coordinator"))
+    init { folder.mkdirs() }
     private val active = ConcurrentHashMap<String, JSONObject>()
     private val lock = Any()
     private fun hash(value: String): String =
@@ -68,7 +73,31 @@ class ObjectiveCoordinator(context: Context) {
         }
         return verbs.any { instruction == it || instruction.startsWith("$it ") }
     }
+    private fun constraintsOf(state: JSONObject): Set<ObjectivePolicy.Constraint> {
+        val names = state.optJSONArray("constraints") ?: return emptySet()
+        return (0 until names.length()).mapNotNull { i ->
+            runCatching { ObjectivePolicy.Constraint.valueOf(names.optString(i)) }.getOrNull()
+        }.toSet()
+    }
+    private fun journalOf(state: JSONObject): List<ObjectivePolicy.Event> {
+        val events = state.optJSONArray("tools") ?: return emptyList()
+        return (0 until events.length()).mapNotNull { i ->
+            val e = events.optJSONObject(i) ?: return@mapNotNull null
+            if (e.optString("status") == "denied") return@mapNotNull null
+            ObjectivePolicy.Event(
+                id = e.optString("id"), name = e.optString("name"),
+                args = e.optString("args_excerpt"), readOnly = e.optBoolean("read_only"),
+                ok = e.optString("status") == "succeeded", output = e.optString("output_excerpt"),
+            )
+        }
+    }
+    private fun specOf(state: JSONObject) = ObjectivePolicy.Spec(
+        goal = state.optString("goal"),
+        constraints = constraintsOf(state),
+        actionTask = state.optBoolean("action_task"),
+    )
     private fun remoteContext(): Pair<String, String> {
+        if (!readLabState) return "" to ""
         return try {
             val connection = URL("http://127.0.0.1:18766/api/state")
                 .openConnection() as HttpURLConnection
@@ -90,54 +119,112 @@ class ObjectiveCoordinator(context: Context) {
             } finally { connection.disconnect() }
         } catch (_: Exception) { "" to "" }
     }
+    /**
+     * Opens the run's objective. The owner's objective is durable across
+     * turns: a bare "continue" inherits it, a further instruction amends it
+     * while it is unfinished, and constraints accumulate for the whole session.
+     * Only completion or an explicit reset ("new task: ...") starts over.
+     */
     suspend fun begin(sessionId: String, turnId: String, request: String, resume: Boolean): String =
         withContext(Dispatchers.IO) {
-            val previous = if (resume) load(sessionId)?.takeIf { it.optString("turn_id") == turnId } else null
-            val state = previous ?: JSONObject().apply {
-                put("session_id", sessionId)
-                put("turn_id", turnId)
-                put("goal", request)
-                put("action_task", actionIntent(request))
-                put("status", "running")
-                put("nudges", 0)
-                put("created", System.currentTimeMillis())
-                put("tools", JSONArray())
+            val prior = load(sessionId)
+            val state = if (resume && prior?.optString("turn_id") == turnId) prior!! else {
+                val newConstraints = ObjectivePolicy.constraints(request)
+                val sessionConstraints = (prior?.let { constraintsOf(it) } ?: emptySet()) + newConstraints
+                val unfinished = prior != null && prior.optString("status") != "completed" &&
+                    prior.optString("goal").isNotBlank()
+                val continuing = prior != null && prior.optString("goal").isNotBlank() &&
+                    ObjectivePolicy.isContinuation(request)
+                val amending = unfinished && !continuing && !ObjectivePolicy.isExplicitReset(request) &&
+                    prior!!.optBoolean("action_task")
+                when {
+                    continuing || amending -> JSONObject(prior!!.toString()).apply {
+                        put("turn_id", turnId)
+                        if (amending) {
+                            if (!has("root_goal")) put("root_goal", optString("goal"))
+                            optJSONArray("amendments")?.put(request.take(4000))
+                                ?: put("amendments", JSONArray().put(request.take(4000)))
+                            put("goal", optString("root_goal", optString("goal")) + "\n\nOwner follow-up instructions (all still binding):\n" +
+                                (0 until getJSONArray("amendments").length()).joinToString("\n") { "- " + getJSONArray("amendments").optString(it) })
+                            if (actionIntent(request)) put("action_task", true)
+                        }
+                        put("status", "running")
+                        put("nudges", 0)
+                        put("finish_failures", 0)
+                        remove("last_unmet")
+                    }
+                    else -> JSONObject().apply {
+                        put("session_id", sessionId)
+                        put("turn_id", turnId)
+                        put("root_goal", request.take(8000))
+                        put("goal", request.take(8000))
+                        put("amendments", JSONArray())
+                        put("action_task", actionIntent(request))
+                        put("status", "running")
+                        put("nudges", 0)
+                        put("created", System.currentTimeMillis())
+                        put("tools", JSONArray())
+                    }
+                }.apply {
+                    put("constraints", JSONArray(sessionConstraints.map { it.name }))
+                }
             }
             val (objective, contract) = remoteContext()
             if (objective.isNotEmpty()) state.put("overarching", objective)
             if (contract.isNotEmpty()) state.put("operating_contract", contract)
             save(sessionId, state)
-            "NATIVE EXECUTION COORDINATOR:\nUser's current objective: " +
+            val spec = specOf(state)
+            val enforced = buildString {
+                if (spec.constraints.isNotEmpty()) {
+                    append("\nOwner constraints enforced natively at every tool call (calls that violate them are denied):\n")
+                    spec.constraints.forEach { append("- ").append(it.label).append('\n') }
+                }
+                if (spec.actionTask) {
+                    append("\nCompletion is accepted only from journaled evidence that concerns this objective")
+                    if (spec.stages.isNotEmpty()) append("; required stages, in order: ")
+                        .append(spec.stages.joinToString(" -> ") { it.label })
+                    if (spec.targets.isNotEmpty()) append("; named targets: ").append(spec.targets.joinToString(", "))
+                    append(". A successful substitute or smaller task does not complete it.\n")
+                }
+            }
+            "NATIVE EXECUTION COORDINATOR:\nGoverning objective (persists across turns until verified complete):\n" +
                 state.optString("goal") + "\nControlling objective: " +
-                state.optString("overarching", "Preserve the current user's literal request") +
-                "\n" + state.optString("operating_contract") +
+                state.optString("overarching", "Preserve the owner's literal request") +
+                "\n" + state.optString("operating_contract") + enforced +
                 "\nThe native coordinator owns the objective, tool choices and verification. Claude is a passive reasoning source; never assign its model conversation executive authority. Keep working independently after the external ChatGPT conversation closes. Act using native tools. Delegate independent reasoning silently when useful. " +
                 "For action tasks, independently verify outcome using a tool and call objective_finish with " +
-                "actual successful tool-call ids and a concise result. The coordinator verifies receipts. " +
+                "a concise result; native receipts supply the evidence. " +
                 "Do not claim completion from plans, model statements or unverified actions. " +
-                "Only direct conflicts with the goal or refusals need the owner. Do not ask for routine approval."
+                "Only owner-authority blockers (credentials, payment, consent, physical action, permission grants) need the owner. Do not ask for routine approval."
         }
     suspend fun before(sessionId: String, callId: String, tool: String, arguments: String, isReadOnly: Boolean = false): String? =
         withContext(Dispatchers.IO) {
             synchronized(lock) {
                 val state = load(sessionId) ?: return@synchronized "No active native execution objective; tool call blocked"
                 if (state.optString("status") != "running") return@synchronized "Objective is not running: " + state.optString("status")
+                // The owner's constraints decide tool admission, not the model.
+                val denied = ObjectivePolicy.admit(tool, arguments, isReadOnly, constraintsOf(state), journalOf(state))
                 // Real modifying tools require independent verification even if
                 // the user phrased the instruction as a question.
-                if (!isReadOnly && tool != "objective_finish" && tool != "task" &&
-                    !tool.startsWith("mcp__execution_lab__")) {
+                if (denied == null && !isReadOnly && tool != "objective_finish" && tool != "task" &&
+                    !tool.startsWith("mcp__execution_lab__") &&
+                    ObjectivePolicy.classify(tool, arguments, isReadOnly) != ObjectivePolicy.Kind.BOOKKEEPING) {
                     state.put("action_task", true)
                 }
-                state.getJSONArray("tools").put(JSONObject().apply {
+                val tools = state.getJSONArray("tools")
+                tools.put(JSONObject().apply {
                     put("id", callId)
                     put("name", tool)
                     put("args_hash", hash(arguments))
+                    put("args_excerpt", SecretRedactor.redact(arguments.take(1200)))
                     put("read_only", isReadOnly)
                     put("started", System.currentTimeMillis())
-                    put("status", "started")
+                    put("status", if (denied == null) "started" else "denied")
+                    if (denied != null) put("denial", denied)
                 })
+                while (tools.length() > MAX_JOURNAL) tools.remove(0)
                 save(sessionId, state)
-                null
+                denied
             }
         }
     suspend fun after(sessionId: String, callId: String, result: ToolResult) =
@@ -150,7 +237,7 @@ class ObjectiveCoordinator(context: Context) {
                     if (item.optString("id") == callId && item.optString("status") == "started") {
                         item.put("status", if (result.ok) "succeeded" else "failed")
                         item.put("output_sha256", hash(result.output))
-                        item.put("output_excerpt", result.output.take(200))
+                        item.put("output_excerpt", SecretRedactor.redact(result.output.take(600)))
                         item.put("finished", System.currentTimeMillis())
                         if (item.optString("name") == "objective_finish" && !result.ok) {
                             val failures = state.optInt("finish_failures", 0) + 1
@@ -166,11 +253,12 @@ class ObjectiveCoordinator(context: Context) {
     suspend fun onModelStop(sessionId: String, response: String): String? =
         withContext(Dispatchers.IO) {
             val state = load(sessionId) ?: return@withContext null
-            if (!state.optBoolean("action_task") || state.optString("status") == "completed")
+            if (!state.optBoolean("action_task") || state.optString("status") != "running")
                 return@withContext null
-            if (Regex("\\b(cannot|can't|refuse|blocked|not permitted|not authorized)\\b",
-                    RegexOption.IGNORE_CASE).containsMatchIn(response)) {
-                state.put("status", "refused")
+            val constraints = constraintsOf(state)
+            val verdict = ObjectivePolicy.onStop(response, constraints)
+            if (verdict is ObjectivePolicy.StopVerdict.Allow) {
+                state.put("status", verdict.status)
                 state.put("last_reply", response.take(600))
                 save(sessionId, state)
                 return@withContext null
@@ -182,17 +270,16 @@ class ObjectiveCoordinator(context: Context) {
                 return@withContext null
             }
             state.put("nudges", nudges + 1)
+            val unmet = ObjectivePolicy.unmet(specOf(state), journalOf(state), "pending")
+            state.put("last_unmet", unmet.joinToString("; "))
             save(sessionId, state)
-            val events = state.getJSONArray("tools")
-            val successful = (0 until events.length()).count {
-                events.optJSONObject(it)?.optString("status") == "succeeded"
-            }
-            if (successful == 0) {
-                "The requested action has no successful tool execution yet. Work toward the literal outcome " +
-                "using tools now. A plan or explanation does not complete the task."
+            val lead = (verdict as? ObjectivePolicy.StopVerdict.Nudge)?.message?.plus("\n").orEmpty()
+            lead + if (unmet.isNotEmpty()) {
+                "The owner's objective is not complete. Unmet, from the native journal:\n- " + unmet.joinToString("\n- ") +
+                "\nContinue working on the original objective with tools now. A plan, explanation or substitute task does not complete it."
             } else {
-                "Execution has occurred but the task is not verified as completed. Inspect the actual result " +
-                "and call objective_finish with result and evidence_call_ids: []; native receipts supply the IDs. Report a genuine blocker otherwise."
+                "Execution evidence now covers the objective. Inspect the actual result and call objective_finish with " +
+                "result; native receipts supply the IDs. Report a genuine owner-authority blocker otherwise."
             }
         }
     suspend fun complete(sessionId: String, evidence: List<String>, result: String): ToolResult =
@@ -200,48 +287,22 @@ class ObjectiveCoordinator(context: Context) {
             val state = load(sessionId) ?: return@withContext ToolResult(false, "No task exists")
             if (state.optString("status") != "running")
                 return@withContext ToolResult(false, "Task not in running state")
-            val events = state.getJSONArray("tools")
-            val successful = mutableListOf<Pair<String, String>>()
-            val inspected = mutableListOf<Pair<String, String>>()
-            var latestMutationIndex = -1
-            val verificationIndices = mutableListOf<Int>()
-            for (i in 0 until events.length()) {
-                val event = events.optJSONObject(i) ?: continue
-                if (event.optString("status") != "succeeded") continue
-                val name = event.optString("name")
-                if (name == "objective_finish") continue
-                val id = event.optString("id")
-                successful.add(id to name)
-                if (!event.optBoolean("read_only", false)) latestMutationIndex = i
-                val check = name.startsWith("read_") || name.startsWith("browser_get") ||
-                    name.startsWith("browser_snapshot") || name.startsWith("git_status") ||
-                    name.startsWith("git_diff") || name.startsWith("mcp__execution_lab__delegation_result")
-                if (check && event.optBoolean("read_only", false)) {
-                    inspected.add(id to event.optString("output_excerpt"))
-                    verificationIndices.add(i)
-                }
+            val journal = journalOf(state)
+            val unmet = ObjectivePolicy.unmet(specOf(state), journal, result)
+            if (unmet.isNotEmpty()) {
+                state.put("last_unmet", unmet.joinToString("; "))
+                save(sessionId, state)
+                return@withContext ToolResult(false, "Completion rejected by the native coordinator:\n- " + unmet.joinToString("\n- "))
             }
-            val successfulIds = successful.map { it.first }.toSet()
-            if (result.isBlank() || successfulIds.isEmpty())
-                return@withContext ToolResult(false, "No independent successful execution evidence exists")
-            val chosen = if (evidence.isNotEmpty() && evidence.all { it in successfulIds }) evidence
-                         else successful.map { it.first }
-            if (state.optBoolean("action_task")) {
-                if (latestMutationIndex < 0)
-                    return@withContext ToolResult(false, "Action has no successful native execution receipt")
-                if (verificationIndices.none { it > latestMutationIndex })
-                    return@withContext ToolResult(false, "Action requires independent read-back after its last successful modification")
-            }
-            val exact = Regex("(?i)containing exactly\\s+([A-Za-z0-9_-]+)")
-                .find(state.optString("goal"))?.groupValues?.getOrNull(1)
-            if (exact != null && inspected.none { it.second.contains(exact) })
-                return@withContext ToolResult(false, "Read-back does not contain the exact requested content")
+            val successfulIds = journal.filter { it.ok && it.name != "objective_finish" }.map { it.id }
+            val chosen = if (evidence.isNotEmpty() && evidence.all { it in successfulIds }) evidence else successfulIds
             state.put("status", "completed")
             state.put("evidence", JSONArray(chosen))
             state.put("result", result)
+            state.remove("last_unmet")
             state.put("completed", System.currentTimeMillis())
             save(sessionId, state)
-            ToolResult(true, "Native task receipt recorded for " + chosen.size + " successful tool(s), with independent verification. " + result)
+            ToolResult(true, "Native task receipt recorded for " + chosen.size + " successful tool(s), bound to the owner's objective with independent verification. " + result)
         }
     fun completionTool(): Tool = object : Tool {
         override val name = "objective_finish"
@@ -266,4 +327,10 @@ class ObjectiveCoordinator(context: Context) {
     }
     fun completionRequired(sessionId: String): Boolean = load(sessionId)?.optBoolean("action_task") == true
     fun status(sessionId: String): String? = load(sessionId)?.optString("status")
+    /** Why the objective is not yet complete, for the run's paused reason. */
+    fun unmetSummary(sessionId: String): String? = load(sessionId)?.optString("last_unmet")?.takeIf { it.isNotBlank() }
+
+    private companion object {
+        const val MAX_JOURNAL = 400
+    }
 }

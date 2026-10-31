@@ -376,7 +376,8 @@ class RunManager(
                 if (!completed && live.value.error == null && verificationRequired) {
                     controls.update(sid) {
                         it.copy(reason = "Objective not verified (native coordinator: " +
-                            (coordinatorState ?: "unavailable") + ")")
+                            (coordinatorState ?: "unavailable") + ")" +
+                            (coordinator?.unmetSummary(sid)?.let { unmet -> ": $unmet" } ?: ""))
                     }
                 }
             } catch (paused: TaskPaused) {
